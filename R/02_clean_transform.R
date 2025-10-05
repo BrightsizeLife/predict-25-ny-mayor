@@ -130,11 +130,18 @@ clean_pollster <- function(x) {
     str_squish()
 }
 
-#' Determine which candidates are present in each row
-get_candidates_in_poll <- function(row) {
-  core <- c("mamdani", "cuomo", "adams", "sliwa")
-  present <- core[!is.na(row[paste0(core, "_pct")])]
-  paste(sort(present), collapse = "+")
+#' Determine which candidates are present in each row (vectorized)
+get_candidates_in_poll <- function(mamdani_pct, cuomo_pct, adams_pct, sliwa_pct) {
+  candidates <- character(length(mamdani_pct))
+  for (i in seq_along(candidates)) {
+    present <- c()
+    if (!is.na(mamdani_pct[i])) present <- c(present, "mamdani")
+    if (!is.na(cuomo_pct[i])) present <- c(present, "cuomo")
+    if (!is.na(adams_pct[i])) present <- c(present, "adams")
+    if (!is.na(sliwa_pct[i])) present <- c(present, "sliwa")
+    candidates[i] <- paste(sort(present), collapse = "+")
+  }
+  candidates
 }
 
 #' Rank scenarios for primary selection (full_field preferred)
@@ -246,9 +253,7 @@ clean <- clean %>%
 
 # Determine which candidates are present in each row
 clean <- clean %>%
-  rowwise() %>%
-  mutate(candidates_in_poll = get_candidates_in_poll(cur_data())) %>%
-  ungroup()
+  mutate(candidates_in_poll = get_candidates_in_poll(mamdani_pct, cuomo_pct, adams_pct, sliwa_pct))
 
 # Count number of major candidates (core four)
 clean <- clean %>%
@@ -523,14 +528,15 @@ if (nrow(american_pulse_example) > 0) {
   cat("  (No American Pulse August 14-19 LV rows found)\n")
 }
 
-# Test 3: Primary rows == #waves
+# Test 3: Primary rows == #full-field waves
 cat("\nPrimary row count validation:\n")
-cat("  Unique wave IDs:", n_waves, "\n")
+cat("  Unique wave IDs (all scenarios):", n_waves_total, "\n")
+cat("  Full-field wave IDs:", n_waves_full_field, "\n")
 cat("  Primary rows:", n_primary, "\n")
 cat("  Sum of is_primary:", sum(clean$is_primary), "\n")
 
-if (n_primary == n_waves && sum(clean$is_primary) == n_primary) {
-  cat("  ✓ PASS: Primary rows == #waves == sum(is_primary)\n")
+if (n_primary == n_waves_full_field && sum(clean$is_primary) == n_primary) {
+  cat("  ✓ PASS: Primary rows == full-field waves == sum(is_primary)\n")
 } else {
   cat("  ⚠️  FAIL: Counts don't match\n")
 }
