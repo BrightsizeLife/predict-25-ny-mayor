@@ -65,7 +65,50 @@ cat analysis/02_transform_report_*.md
 - `analysis/02_transform_report_YYYYmmdd_HHMMSS.md`
 
 ## 3) EDA tests (R/03_eda_plots.R)
-- Time-series per candidate; save `plots/EDA_*_YYYYmmdd_HHMMSS.png`
+
+**Goal:** Validate distributions, spot irregularities, generate visual diagnostics
+
+**Checklist:**
+- [ ] Script runs with default flags (dry run)
+- [ ] 12 timestamped PNGs saved under `plots/` when `--dryrun=false` (DPI=300)
+- [ ] Report created under `analysis/03_eda_report_*.md`
+- [ ] Neon theme applied to all plots (black background, bright grid)
+- [ ] Candidate palette used consistently (mamdani=#39FF14, cuomo=#D200FF, etc.)
+- [ ] Percent sum diagnostics flag any rows < 97% or > 103%
+- [ ] Report includes "Implications for Modeling" section
+
+**Commands:**
+```bash
+# Dry run (default) - focus on cleaned
+Rscript R/03_eda_plots.R
+
+# Execute EDA on cleaned data
+Rscript R/03_eda_plots.R --dryrun=false
+
+# Include primary for comparison
+Rscript R/03_eda_plots.R \
+  --input_cleaned=data/processed/polls_cleaned_20251005_162414.csv \
+  --input_primary=data/processed/polls_primary_20251005_162414.csv \
+  --dryrun=false
+```
+
+**Artifacts:**
+- `plots/EDA_P{1-12}_*_{timestamp}.png` (12 plots, DPI=300, high-res)
+- `analysis/03_eda_report_{timestamp}.md`
+
+**Plots generated:**
+1. Candidate % over time (time series, all scenarios)
+2. Margins over time (mamdani-cuomo, mamdani-adams)
+3. Pollster small multiples (top 8 pollsters)
+4. Candidate density distributions
+5. Boxplots by vote status (LV/RV/A)
+6. Pre/post Adams withdrawal comparison
+7. Mamdani vs Cuomo scatter (smoothed)
+8. Pairwise margins hexbin
+9. Percent sums histogram (by scenario type)
+10. Missingness bar chart
+11. Scenario variant deltas
+12. Primary vs All comparison (if primary data provided)
 
 ## 4) Modeling tests (R/04_fit_models.R, R/05_compare_loo.R)
 - brms multinomial; `(1|pollster)+(1|vote_status)`; time as linear and splines df=3,4,5

@@ -48,8 +48,11 @@ Rscript R/02_clean_transform.R --dryrun=false
 # 3b. Transform with custom input
 Rscript R/02_clean_transform.R --input=data/raw/polls_20251005_092241.csv --dryrun=false
 
-# 4. EDA (coming soon)
-# Rscript R/03_eda_plots.R --input data/processed/polls_primary_*.csv
+# 4. EDA on cleaned data (dry run)
+Rscript R/03_eda_plots.R
+
+# 4a. Execute EDA
+Rscript R/03_eda_plots.R --dryrun=false
 
 # 5. Fit models (coming soon)
 # Rscript R/04_fit_models.R --input data/processed/polls_primary_*.csv
