@@ -195,13 +195,46 @@ for (col in cand_cols) {
   clean[[n_col]] <- round(clean$sample_size * clean[[pct_col]] / 100, 0)
 }
 
-# Build identifiers
+# Build identifiers with proper wave grouping
+# IMPORTANT: make_clean_names() on vectors adds suffixes for duplicates
+# We need to create a lookup table for unique pollsters first
+pollster_lookup <- tibble(
+  pollster_clean = unique(map_chr(clean$poll_source, clean_pollster))
+) %>%
+  mutate(pollster_slug = make_clean_names(pollster_clean))
+
+clean <- clean %>%
+  mutate(pollster_clean = map_chr(poll_source, clean_pollster)) %>%
+  left_join(pollster_lookup, by = "pollster_clean")
+
+# Create provisional grouping key for fill-down
 clean <- clean %>%
   mutate(
-    pollster = map_chr(poll_source, clean_pollster),
-    pollster_slug = make_clean_names(pollster),
-    pollster_wave_id = glue("{pollster_slug}_{format(date_median, '%Y%m%d')}")
+    g_key = paste(pollster_slug, date_start, date_end, sep = "|")
   )
+
+# Fill-down vote_status and sample_size within each g_key group
+# Prefer rows with non-NA vote_status; for sample_size, use max non-NA
+clean <- clean %>%
+  group_by(g_key) %>%
+  mutate(
+    vote_status_filled = coalesce(vote_status, first(na.omit(vote_status))),
+    sample_size_filled = coalesce(sample_size, max(sample_size, na.rm = TRUE))
+  ) %>%
+  ungroup() %>%
+  mutate(
+    vote_status = vote_status_filled,
+    sample_size = sample_size_filled
+  ) %>%
+  select(-vote_status_filled, -sample_size_filled)
+
+# Build final pollster_wave_id: pollster_slug + date_median + vote_status
+clean <- clean %>%
+  mutate(
+    pollster_wave_id = glue("{pollster_slug}_{format(date_median, '%Y%m%d')}_{vote_status}"),
+    pollster = pollster_clean  # Alias for backward compatibility
+  ) %>%
+  select(-g_key)  # Remove provisional key
 
 # Determine which candidates are present in each row
 clean <- clean %>%
@@ -243,13 +276,14 @@ clean <- clean %>%
 cat("\nSelecting primary rows (one per poll wave)...\n")
 
 # Selection criteria:
-# 1. Prefer full_field scenario
-# 2. Tie-breaker: largest sample_size
+# 1. Highest wave_num_candidates
+# 2. Prefer full_field scenario
+# 3. Tie-breaker: largest sample_size
 
 primary <- clean %>%
   mutate(scenario_rank = scenario_rank(scenario_type)) %>%
   group_by(pollster_wave_id) %>%
-  arrange(desc(scenario_rank), desc(sample_size)) %>%
+  arrange(desc(wave_num_candidates), desc(scenario_rank), desc(sample_size)) %>%
   slice(1) %>%
   ungroup() %>%
   select(-scenario_rank)
@@ -269,11 +303,18 @@ if (n_primary != n_waves) {
 }
 
 # Mark is_primary in clean dataset
+# Use exact matching on multiple keys to identify primary rows uniquely
 clean <- clean %>%
+  left_join(
+    primary %>%
+      select(pollster_wave_id, scenario_type, wave_num_candidates, sample_size, mamdani_pct, cuomo_pct, adams_pct, sliwa_pct) %>%
+      mutate(is_primary_flag = TRUE),
+    by = c("pollster_wave_id", "scenario_type", "wave_num_candidates", "sample_size", "mamdani_pct", "cuomo_pct", "adams_pct", "sliwa_pct")
+  ) %>%
   mutate(
-    is_primary = paste(pollster_wave_id, date_string, sample_size_raw, scenario_type, sep = "|") %in%
-                 paste(primary$pollster_wave_id, primary$date_string, primary$sample_size_raw, primary$scenario_type, sep = "|")
-  )
+    is_primary = coalesce(is_primary_flag, FALSE)
+  ) %>%
+  select(-is_primary_flag)
 
 # ==============================================================================
 # Logging: Show Dropped Alternates
@@ -304,6 +345,71 @@ if (nrow(alternates) > 0) {
     print()
 } else {
   cat("No alternates dropped (all waves have exactly 1 row)\n")
+}
+
+# ==============================================================================
+# Wave ID Consistency Tests
+# ==============================================================================
+
+cat("\n=== Wave ID Consistency Tests ===\n")
+
+# Test 1: Each (pollster_clean, date_start, date_end, vote_status) should have ONE unique pollster_wave_id
+wave_id_check <- clean %>%
+  group_by(pollster_clean, date_start, date_end, vote_status) %>%
+  summarise(
+    n_unique_ids = n_distinct(pollster_wave_id),
+    unique_ids = paste(unique(pollster_wave_id), collapse = ", "),
+    .groups = "drop"
+  ) %>%
+  filter(n_unique_ids > 1)
+
+if (nrow(wave_id_check) > 0) {
+  cat("\n⚠️  WARNING: Multiple wave IDs for same (pollster, date, vote_status):\n")
+  print(wave_id_check)
+} else {
+  cat("✓ PASS: Each (pollster, date, vote_status) has unique wave ID\n")
+}
+
+# Test 2: American Pulse example (August 14-19, 2025 LV rows)
+cat("\nAmerican Pulse Research & Polling August 14-19, 2025 LV rows:\n")
+american_pulse_example <- clean %>%
+  filter(
+    str_detect(pollster_clean, regex("American Pulse", ignore_case = TRUE)),
+    date_start == as.Date("2025-08-14"),
+    date_end == as.Date("2025-08-19"),
+    vote_status == "LV"
+  ) %>%
+  select(pollster_wave_id, scenario_type, wave_num_candidates, is_primary, sample_size,
+         mamdani_pct, cuomo_pct, adams_pct, sliwa_pct)
+
+if (nrow(american_pulse_example) > 0) {
+  print(american_pulse_example)
+
+  n_unique_ids_ap <- n_distinct(american_pulse_example$pollster_wave_id)
+  n_primary_ap <- sum(american_pulse_example$is_primary)
+
+  cat("\n  Unique wave IDs:", n_unique_ids_ap, "\n")
+  cat("  Primary rows:", n_primary_ap, "\n")
+
+  if (n_unique_ids_ap == 1 && n_primary_ap == 1) {
+    cat("  ✓ PASS: All rows share same wave ID; exactly 1 is primary\n")
+  } else {
+    cat("  ⚠️  FAIL: Expected 1 unique ID and 1 primary row\n")
+  }
+} else {
+  cat("  (No American Pulse August 14-19 LV rows found)\n")
+}
+
+# Test 3: Primary rows == #waves
+cat("\nPrimary row count validation:\n")
+cat("  Unique wave IDs:", n_waves, "\n")
+cat("  Primary rows:", n_primary, "\n")
+cat("  Sum of is_primary:", sum(clean$is_primary), "\n")
+
+if (n_primary == n_waves && sum(clean$is_primary) == n_primary) {
+  cat("  ✓ PASS: Primary rows == #waves == sum(is_primary)\n")
+} else {
+  cat("  ⚠️  FAIL: Counts don't match\n")
 }
 
 # ==============================================================================
@@ -355,6 +461,7 @@ md_content <- glue("
 - **Primary rows selected:** {n_primary}
 - **Alternates dropped:** {nrow(alternates)}
 - **Assertion:** Primary rows == waves? **{if (n_primary == n_waves) 'PASS ✓' else 'FAIL ✗'}**
+- **Wave ID consistency:** {if (nrow(wave_id_check) == 0) 'PASS ✓ - Each (pollster, date, vote_status) has unique wave ID' else glue('FAIL ✗ - {nrow(wave_id_check)} groups have multiple IDs')}
 
 ## Scenario Types (PRIMARY rows)
 
