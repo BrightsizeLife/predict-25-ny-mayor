@@ -11,8 +11,8 @@ my_awesome_theme <- function() {
     theme(
       plot.background = element_rect(fill = "black", color = NA),
       panel.background = element_rect(fill = "black", color = NA),
-      panel.grid.major = element_line(color = "#1ED760", linewidth = 0.15, alpha = 0.30),
-      panel.grid.minor = element_line(color = "#1ED760", linewidth = 0.08, alpha = 0.20),
+      panel.grid.major = element_line(color = alpha("#1ED760", 0.30), linewidth = 0.15),
+      panel.grid.minor = element_line(color = alpha("#1ED760", 0.20), linewidth = 0.08),
       text = element_text(color = "#39FF14", family = "mono"),
       axis.text = element_text(color = "#39FF14"),
       axis.title = element_text(color = "#39FF14", face = "bold"),
