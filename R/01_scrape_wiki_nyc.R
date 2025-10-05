@@ -1,7 +1,8 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
-# 01_scrape_wiki_nyc.R
+# 01_scrape_wiki_nyc.R (v3)
 # Scrape Wikipedia "2025 New York City mayoral election — General election polls"
+# Uses html_table(fill=TRUE) + poll grouping + fill-down to handle rowspan
 # ==============================================================================
 
 # Parse CLI arguments
@@ -27,12 +28,14 @@ suppressPackageStartupMessages({
   library(rvest)
   library(xml2)
   library(tidyverse)
-  library(lubridate)
+  library(janitor)
   library(glue)
   library(digest)
 })
 
-cat("=== NYC Mayoral Polling Scraper ===\n")
+STAMP <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+cat("=== NYC Mayoral Polling Scraper v3 ===\n")
 cat("URL:", url, "\n")
 cat("Dry run:", dryrun, "\n")
 cat("Snapshot on drift:", snapshot, "\n\n")
@@ -41,97 +44,51 @@ cat("Snapshot on drift:", snapshot, "\n\n")
 # Helper Functions
 # ==============================================================================
 
-#' Clean HTML text: strip footnotes, normalize dashes, remove non-breaking spaces
-clean_html_text <- function(text) {
-  if (is.na(text) || text == "") return(NA_character_)
-
-  # Convert to UTF-8
-  text <- enc2utf8(as.character(text))
-
-  # Define unicode characters as hex codes to avoid encoding issues
-  nbsp <- intToUtf8(0x00A0)     # non-breaking space
-  emdash <- intToUtf8(0x2014)   # em-dash
-  endash <- intToUtf8(0x2013)   # en-dash
-
-  text <- text %>%
-    # Remove footnote brackets like [m], [316], etc.
-    str_remove_all("\\[[[:alnum:]]+\\]") %>%
-    # Remove non-breaking spaces
-    str_replace_all(nbsp, " ") %>%
-    # Normalize em-dash and en-dash to simple dash
-    str_replace_all(emdash, "-") %>%
-    str_replace_all(endash, "-") %>%
-    # Remove percentage signs (will parse later)
-    str_remove_all("%") %>%
-    # Trim whitespace
+#' Normalize text: unicode whitespace and dashes
+norm_txt <- function(x) {
+  x %>%
+    str_replace_all("\u00A0", " ") %>%           # NBSP
+    str_replace_all("[\u2013\u2014]", "-") %>%   # em-dash, en-dash
+    str_replace_all("\\s+", " ") %>%
     str_trim()
-
-  # Convert dashes and empty strings to NA
-  if (text %in% c("-", "", "NA")) {
-    return(NA_character_)
-  }
-
-  text
 }
 
-#' Detect row type based on content
-detect_row_type <- function(row_data) {
-  # Convert to character vector for checking
-  row_str <- paste(unlist(row_data), collapse = " ")
-
-  # Event marker: "Adams withdraws"
-  if (str_detect(row_str, regex("adams.*withdraw", ignore_case = TRUE))) {
-    return("event_marker")
-  }
-
-  # Check which major candidates have values
-  has_mamdani <- !is.na(row_data$mamdani) && row_data$mamdani != ""
-  has_cuomo <- !is.na(row_data$cuomo) && row_data$cuomo != ""
-  has_adams <- !is.na(row_data$adams) && row_data$adams != ""
-  has_sliwa <- !is.na(row_data$sliwa) && row_data$sliwa != ""
-
-  candidate_count <- sum(c(has_mamdani, has_cuomo, has_adams, has_sliwa))
-
-  # Full field: all 4 major candidates present
-  if (candidate_count == 4) {
-    return("full_field")
-  }
-
-  # Adams removed: Adams is NA but others present
-  if (!has_adams && candidate_count >= 2) {
-    return("adams_removed")
-  }
-
-  # Head-to-head: only 2 candidates
-  if (candidate_count == 2) {
-    candidates <- c()
-    if (has_mamdani) candidates <- c(candidates, "mamdani")
-    if (has_cuomo) candidates <- c(candidates, "cuomo")
-    if (has_adams) candidates <- c(candidates, "adams")
-    if (has_sliwa) candidates <- c(candidates, "sliwa")
-    return(paste0("head_to_head_", paste(candidates, collapse = "_")))
-  }
-
-  # Default
-  return("partial")
+#' Strip footnotes: <sup> tags and [m], [316] brackets
+strip_footnotes <- function(x) {
+  x %>%
+    str_remove_all("<sup>.*?</sup>") %>%
+    str_remove_all("\\[[[:alnum:]]+\\]") %>%
+    str_trim()
 }
 
-#' Fill down metadata columns (poll_source, date_string, sample_size_raw)
-fill_down_metadata <- function(df) {
-  df %>%
-    mutate(
-      poll_source = if_else(is.na(poll_source) | poll_source == "",
-                            NA_character_, poll_source),
-      date_string = if_else(is.na(date_string) | date_string == "",
-                            NA_character_, date_string),
-      sample_size_raw = if_else(is.na(sample_size_raw) | sample_size_raw == "",
-                                NA_character_, sample_size_raw)
-    ) %>%
-    fill(poll_source, date_string, sample_size_raw, .direction = "down")
+#' Clean cell: normalize + strip + convert dashes to NA
+clean_cell <- function(x) {
+  x <- as.character(x) %>% norm_txt() %>% strip_footnotes()
+  ifelse(x %in% c("", "-", "—", "–", "-%", "—%", "–%"), NA_character_, x)
+}
+
+#' Extract numeric percent from text
+pct_num <- function(x) {
+  if (is.na(x)) return(NA_real_)
+  m <- str_match(x, "([0-9]+(?:\\.[0-9]+)?)%?")
+  as.numeric(m[, 2])
+}
+
+#' Extract vote status (LV/RV/A) from sample string
+vote_status_from_sample <- function(x) {
+  if (is.na(x)) return(NA_character_)
+  m <- str_match(x, "\\(([A-Za-z]+)\\)")
+  toupper(coalesce(m[, 2], NA_character_))
+}
+
+#' Check if any candidate column has a value
+has_any_candidate <- function(df) {
+  cand_cols <- c("adams", "cuomo", "mamdani", "sliwa", "walden", "other", "undecided")
+  rowSums(!is.na(df[intersect(cand_cols, names(df))])) > 0
 }
 
 # ==============================================================================
-# Main Scraping Logic
+# Fetch and Parse Table
 # ==============================================================================
 
 cat("Fetching page...\n")
@@ -143,169 +100,241 @@ page <- tryCatch({
 
 cat("Locating polling section...\n")
 
-# Use XPath to find the anchor, then the following table
+# Robust XPath: try multiple strategies
 table_node <- tryCatch({
-  # Find the General_election_polls anchor
-  anchor <- page %>%
-    html_nodes(xpath = "//*[@id='General_election_polls']")
+  # Strategy 1: Direct element with id, following-sibling table
+  xpath1 <- "//*[@id='General_election_polls']/following-sibling::table[contains(@class,'wikitable')][1]"
+  tables <- xml_find_all(page, xpath1)
 
-  if (length(anchor) == 0) {
-    stop("Section #General_election_polls not found")
+  # Strategy 2: span with id inside heading
+  if (length(tables) == 0) {
+    xpath2 <- "//span[@id='General_election_polls']/ancestor::*[self::h2 or self::h3 or self::h4][1]/following-sibling::table[contains(@class,'wikitable')][1]"
+    tables <- xml_find_all(page, xpath2)
   }
 
-  # Find first wikitable following the anchor
-  table <- page %>%
-    html_nodes(xpath = "//*[@id='General_election_polls']/following::table[contains(@class,'wikitable')][1]")
-
-  if (length(table) == 0) {
-    stop("No wikitable found after #General_election_polls")
+  # Strategy 3: Any element with id, then following table
+  if (length(tables) == 0) {
+    xpath3 <- "//*[@id='General_election_polls']/following::table[contains(@class,'wikitable')][1]"
+    tables <- xml_find_all(page, xpath3)
   }
 
-  table[[1]]
+  if (length(tables) == 0) {
+    stop("Section #General_election_polls table not found with any selector strategy")
+  }
+
+  tables[[1]]
 }, error = function(e) {
   stop("ERROR: ", e$message)
 })
 
 cat("✓ Table found\n\n")
 
-# Parse table
-cat("Parsing table...\n")
-raw_table <- table_node %>%
-  html_table(fill = TRUE, header = TRUE)
-
-cat("Raw dimensions:", nrow(raw_table), "rows x", ncol(raw_table), "columns\n")
-
-# Log headers
-headers <- colnames(raw_table)
-header_hash <- digest(headers, algo = "md5")
-
-cat("\nDiscovered headers:\n")
-print(headers)
-cat("\nHeader hash:", header_hash, "\n")
-
-# Expected headers (flexible matching)
-expected_core <- c("Poll source", "Date", "Sample", "Margin")
-has_expected <- sum(str_detect(headers, regex(paste(expected_core, collapse = "|"),
-                                               ignore_case = TRUE)))
-
-if (has_expected < 3) {
-  warning("WARN: Schema drift detected - fewer than 3 expected core columns found")
-
-  if (snapshot) {
-    snapshot_path <- glue("data/raw/html_snapshot_{format(Sys.time(), '%Y%m%d_%H%M%S')}.html")
-    dir.create("data/raw", recursive = TRUE, showWarnings = FALSE)
-    write_html(page, snapshot_path)
-    cat("INFO: HTML snapshot saved to", snapshot_path, "\n")
-  }
-}
-
 # ==============================================================================
-# Clean and Transform
+# Process Table with html_table + Post-processing
 # ==============================================================================
 
-cat("\nCleaning table data...\n")
+cat("Parsing table with html_table(fill=TRUE)...\n")
 
-# Standardize column names
-df <- raw_table %>%
-  janitor::clean_names()
+# Use html_table to handle rowspan/colspan
+df_raw <- html_table(table_node, fill = TRUE) %>% as_tibble()
 
-# Identify key columns by pattern matching (case-insensitive)
-col_map <- list()
+cat("Raw table dimensions:", nrow(df_raw), "rows x", ncol(df_raw), "columns\n")
 
-for (col in names(df)) {
-  if (str_detect(col, regex("poll.*source", ignore_case = TRUE))) {
-    col_map$poll_source <- col
-  } else if (str_detect(col, regex("date", ignore_case = TRUE))) {
-    col_map$date_string <- col
-  } else if (str_detect(col, regex("sample", ignore_case = TRUE))) {
-    col_map$sample_size_raw <- col
-  } else if (str_detect(col, regex("margin", ignore_case = TRUE))) {
-    col_map$margin_of_error <- col
-  } else if (str_detect(col, regex("mamdani", ignore_case = TRUE))) {
-    col_map$mamdani <- col
-  } else if (str_detect(col, regex("cuomo", ignore_case = TRUE))) {
-    col_map$cuomo <- col
-  } else if (str_detect(col, regex("adams", ignore_case = TRUE))) {
-    col_map$adams <- col
-  } else if (str_detect(col, regex("sliwa", ignore_case = TRUE))) {
-    col_map$sliwa <- col
-  } else if (str_detect(col, regex("walden", ignore_case = TRUE))) {
-    col_map$walden <- col
-  } else if (str_detect(col, regex("^other$", ignore_case = TRUE))) {
-    col_map$other <- col
-  } else if (str_detect(col, regex("undecided", ignore_case = TRUE))) {
-    col_map$undecided <- col
-  }
-}
+# Clean column names
+names(df_raw) <- make_clean_names(names(df_raw))
 
-# Rename columns using the map
-df_renamed <- df
-for (new_name in names(col_map)) {
-  old_name <- col_map[[new_name]]
-  if (old_name %in% names(df_renamed)) {
-    names(df_renamed)[names(df_renamed) == old_name] <- new_name
-  }
-}
+# Clean all cells
+df <- df_raw %>% mutate(across(everything(), clean_cell))
 
-# Ensure all expected columns exist
-required_cols <- c("poll_source", "date_string", "sample_size_raw", "margin_of_error",
-                   "mamdani", "cuomo", "adams", "sliwa", "other", "undecided")
+# Keep row-wide text to detect event bars
+row_text <- df %>% unite("_row_text_all_", everything(), sep = " | ", na.rm = TRUE)
+df$row_text_all <- row_text$`_row_text_all_`
 
-for (col in required_cols) {
-  if (!col %in% names(df_renamed)) {
-    df_renamed[[col]] <- NA_character_
-  }
-}
+# Fuzzy locate important columns
+col_poll <- names(df)[str_detect(names(df), "poll|source")][1]
+col_date <- names(df)[str_detect(names(df), "date")][1]
+col_sample <- names(df)[str_detect(names(df), "sample")][1]
+col_moe <- names(df)[str_detect(names(df), "margin|error")][1]
 
-# If walden exists, combine with other
-if ("walden" %in% names(df_renamed)) {
-  df_renamed <- df_renamed %>%
-    mutate(
-      other = if_else(!is.na(walden) & walden != "", walden, other)
-    ) %>%
-    select(-walden)
-}
+cat("\nColumn mapping:\n")
+cat("  poll_source:", col_poll, "\n")
+cat("  date_string:", col_date, "\n")
+cat("  sample_size_raw:", col_sample, "\n")
+cat("  margin_of_error:", col_moe, "\n")
 
-# Select only required columns
-df_selected <- df_renamed %>%
-  select(poll_source, date_string, sample_size_raw, margin_of_error,
-         mamdani, cuomo, adams, sliwa, other, undecided)
+# Candidate columns
+cand_cols <- c(
+  adams = names(df)[str_detect(names(df), "adams")][1],
+  cuomo = names(df)[str_detect(names(df), "cuomo")][1],
+  mamdani = names(df)[str_detect(names(df), "mamdani")][1],
+  sliwa = names(df)[str_detect(names(df), "sliwa")][1],
+  walden = names(df)[str_detect(names(df), "walden")][1],
+  other = names(df)[str_detect(names(df), "^other$|other_")][1],
+  undec = names(df)[str_detect(names(df), "undecided")][1]
+)
+cand_cols <- compact(cand_cols)
 
-# Clean all text fields
-df_clean <- df_selected %>%
-  mutate(across(everything(), ~ map_chr(.x, clean_html_text)))
+cat("  Candidate columns:", paste(names(cand_cols), collapse = ", "), "\n\n")
 
-# Fill down metadata (handles rowspan)
-df_filled <- fill_down_metadata(df_clean)
+# Build canonical tibble
+sub <- tibble(
+  poll_source = coalesce(df[[col_poll]], NA_character_),
+  date_string = coalesce(df[[col_date]], NA_character_),
+  sample_size_raw = coalesce(df[[col_sample]], NA_character_),
+  margin_of_error = coalesce(df[[col_moe]], NA_character_),
+  adams = if (!is.null(cand_cols["adams"])) df[[cand_cols["adams"]]] else NA_character_,
+  cuomo = if (!is.null(cand_cols["cuomo"])) df[[cand_cols["cuomo"]]] else NA_character_,
+  mamdani = if (!is.null(cand_cols["mamdani"])) df[[cand_cols["mamdani"]]] else NA_character_,
+  sliwa = if (!is.null(cand_cols["sliwa"])) df[[cand_cols["sliwa"]]] else NA_character_,
+  walden = if (!is.null(cand_cols["walden"])) df[[cand_cols["walden"]]] else NA_character_,
+  other = if (!is.null(cand_cols["other"])) df[[cand_cols["other"]]] else NA_character_,
+  undecided = if (!is.null(cand_cols["undec"])) df[[cand_cols["undec"]]] else NA_character_,
+  row_text_all = df$row_text_all
+)
 
-# Detect row types
-cat("Detecting row types...\n")
-df_typed <- df_filled %>%
-  rowwise() %>%
-  mutate(row_type = detect_row_type(pick(everything()))) %>%
+# ==============================================================================
+# Poll Grouping and Fill-Down
+# ==============================================================================
+
+cat("Detecting poll groups...\n")
+
+# Identify event rows
+is_event <- str_detect(sub$row_text_all, regex("withdraws from the race", ignore_case = TRUE))
+
+# Identify new poll starts (revised rule)
+# New poll if: poll_source present OR date_string present OR event row OR sample has (LV/RV/A)
+has_vote_status <- !is.na(sub$sample_size_raw) & str_detect(sub$sample_size_raw, "\\([A-Za-z]+\\)")
+is_new <- !is.na(sub$poll_source) | !is.na(sub$date_string) | is_event | has_vote_status
+
+group_id <- cumsum(coalesce(is_new, FALSE))
+sub$group_id <- group_id
+
+n_groups <- max(group_id, na.rm = TRUE)
+cat("Detected", n_groups, "poll groups\n\n")
+
+# Fill down metadata within each group
+cat("Filling down metadata within groups...\n")
+sub <- sub %>%
+  group_by(group_id) %>%
+  fill(poll_source, date_string, sample_size_raw, margin_of_error, .direction = "down") %>%
   ungroup()
 
-# Add scrape timestamp and notes placeholder
-df_final <- df_typed %>%
+# Show first 3 groups for eyeball check
+cat("First 3 groups (eyeball fill-down):\n")
+sub %>%
+  filter(group_id <= 3) %>%
+  select(group_id, poll_source, date_string, sample_size_raw, adams, cuomo, mamdani) %>%
+  print(n = 20)
+
+# ==============================================================================
+# Row Classification
+# ==============================================================================
+
+cat("\nClassifying row types...\n")
+
+# Helper: check if exactly 2 of 4 major candidates present
+two_of_four <- function(df) {
+  major <- c("adams", "cuomo", "mamdani", "sliwa")
+  rowSums(!is.na(df[major])) == 2
+}
+
+# Helper: get names of present candidates
+get_candidate_names <- function(row) {
+  candidates <- c("adams", "cuomo", "mamdani", "sliwa")
+  present <- candidates[!is.na(row[candidates])]
+  if (length(present) == 2) {
+    paste0("head_to_head_", paste(sort(present), collapse = "_vs_"))
+  } else {
+    NA_character_
+  }
+}
+
+# Classify
+sub <- sub %>%
+  rowwise() %>%
   mutate(
-    scrape_timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
-    notes = NA_character_
+    row_type = case_when(
+      str_detect(row_text_all, regex("withdraws from the race", ignore_case = TRUE)) ~ "event_marker",
+      sum(!is.na(c(adams, cuomo, mamdani, sliwa))) == 2 ~ get_candidate_names(cur_data()),
+      is.na(adams) & sum(!is.na(c(mamdani, cuomo, sliwa))) >= 2 ~ "adams_removed",
+      TRUE ~ "full_field"
+    )
   ) %>%
-  select(scrape_timestamp, poll_source, date_string, sample_size_raw,
-         margin_of_error, adams, cuomo, mamdani, sliwa, other, undecided,
-         row_type, notes)
+  ungroup()
+
+# ==============================================================================
+# Filter Junk Rows
+# ==============================================================================
+
+cat("Filtering junk rows...\n")
+
+# Drop rows where ALL candidates AND margin_of_error are NA (unless event_marker)
+all_cand_na <- rowSums(!is.na(sub[c("adams", "cuomo", "mamdani", "sliwa", "walden", "other", "undecided")])) == 0
+moe_na <- is.na(sub$margin_of_error)
+is_junk <- all_cand_na & moe_na & sub$row_type != "event_marker"
+
+n_before <- nrow(sub)
+sub <- sub[!is_junk, ]
+n_after <- nrow(sub)
+
+cat("Dropped", n_before - n_after, "junk rows\n")
+
+# ==============================================================================
+# Deduplication
+# ==============================================================================
+
+cat("\nDeduplicating...\n")
+
+# Create dedupe key
+sub <- sub %>%
+  mutate(
+    dedupe_key = paste(
+      poll_source, date_string, sample_size_raw, margin_of_error,
+      adams, cuomo, mamdani, sliwa, walden, other, undecided, row_type,
+      sep = "|"
+    )
+  )
+
+n_before_dedup <- nrow(sub)
+duplicates <- sum(duplicated(sub$dedupe_key))
+sub <- sub %>% distinct(dedupe_key, .keep_all = TRUE)
+n_after_dedup <- nrow(sub)
+
+cat("Duplicates dropped:", duplicates, "\n")
+
+# ==============================================================================
+# Finalize Output
+# ==============================================================================
+
+cat("\nFinalizing output...\n")
+
+out <- sub %>%
+  mutate(scrape_timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S")) %>%
+  select(
+    scrape_timestamp, poll_source, date_string, sample_size_raw, margin_of_error,
+    adams, cuomo, mamdani, sliwa, walden, other, undecided,
+    row_type
+  )
 
 # ==============================================================================
 # Summary and Output
 # ==============================================================================
 
 cat("\n=== Processing Summary ===\n")
-cat("Total rows:", nrow(df_final), "\n")
+cat("Groups detected:", n_groups, "\n")
+cat("Junk rows dropped:", n_before - n_after, "\n")
+cat("Duplicates dropped:", duplicates, "\n")
+cat("Final rows:", nrow(out), "\n\n")
+
 cat("Row type distribution:\n")
-print(table(df_final$row_type))
+row_type_table <- out %>% count(row_type, name = "count")
+print(row_type_table)
 
 cat("\n=== Sample (first 5 rows) ===\n")
-print(df_final %>% select(poll_source, date_string, mamdani, cuomo, adams, row_type) %>% head(5))
+out %>%
+  select(poll_source, date_string, sample_size_raw, mamdani, cuomo, adams, row_type) %>%
+  head(5) %>%
+  print()
 
 if (dryrun) {
   cat("\n✓ DRY RUN complete. No file written.\n")
@@ -313,13 +342,13 @@ if (dryrun) {
 } else {
   # Write to timestamped CSV
   dir.create("data/raw", recursive = TRUE, showWarnings = FALSE)
-  output_path <- glue("data/raw/polls_{format(Sys.time(), '%Y%m%d_%H%M%S')}.csv")
+  output_path <- glue("data/raw/polls_{STAMP}.csv")
 
-  write_csv(df_final, output_path, na = "")
+  write_csv(out, output_path, na = "")
 
   cat("\n✓ SUCCESS: Scraped data written to", output_path, "\n")
-  cat("  Rows:", nrow(df_final), "\n")
-  cat("  Columns:", ncol(df_final), "\n")
+  cat("  Rows:", nrow(out), "\n")
+  cat("  Columns:", ncol(out), "\n")
 }
 
 cat("\n")
