@@ -11,7 +11,9 @@ input_file <- NULL
 output_processed <- NULL
 output_primary <- NULL
 report_file <- NULL
+qc_outliers_file <- NULL
 dryrun <- TRUE
+qc_policy <- "renorm"  # renorm, drop, keep
 
 if (length(args) > 0) {
   for (arg in args) {
@@ -23,6 +25,10 @@ if (length(args) > 0) {
       output_primary <- sub("^--output_primary=", "", arg)
     } else if (grepl("^--report=", arg)) {
       report_file <- sub("^--report=", "", arg)
+    } else if (grepl("^--qc_outliers=", arg)) {
+      qc_outliers_file <- sub("^--qc_outliers=", "", arg)
+    } else if (grepl("^--qc_policy=", arg)) {
+      qc_policy <- sub("^--qc_policy=", "", arg)
     } else if (grepl("^--dryrun=", arg)) {
       dryrun <- as.logical(sub("^--dryrun=", "", arg))
     }
@@ -52,10 +58,12 @@ if (is.null(input_file)) {
 if (is.null(output_processed)) output_processed <- glue("data/processed/polls_cleaned_{STAMP}.csv")
 if (is.null(output_primary)) output_primary <- glue("data/processed/polls_primary_{STAMP}.csv")
 if (is.null(report_file)) report_file <- glue("analysis/02_transform_report_{STAMP}.md")
+if (is.null(qc_outliers_file)) qc_outliers_file <- glue("analysis/qc_outliers_{STAMP}.csv")
 
 cat("=== NYC Mayoral Polling Data Transform ===\n")
 cat("Timestamp:", STAMP, "\n")
-cat("Dry run:", dryrun, "\n\n")
+cat("Dry run:", dryrun, "\n")
+cat("QC policy:", qc_policy, "\n\n")
 
 # ==============================================================================
 # Helper Functions
@@ -270,36 +278,151 @@ clean <- clean %>%
   mutate(pre_post_adams_withdrawal = date_median >= as.Date("2025-09-28"))
 
 # ==============================================================================
-# Create PRIMARY Rows File (One per Wave)
+# QC Band: Row Percent Sums (Full-Field Only)
 # ==============================================================================
 
-cat("\nSelecting primary rows (one per poll wave)...\n")
+cat("\n=== QC Band: Row Percent Sums ===\n")
+cat("Policy:", qc_policy, "\n")
+cat("Band: [96, 104]\n\n")
 
-# Selection criteria:
-# 1. Highest wave_num_candidates
-# 2. Prefer full_field scenario
-# 3. Tie-breaker: largest sample_size
+# Compute row_sum for full_field rows only (top 4 majors + other + undecided)
+clean <- clean %>%
+  mutate(
+    row_sum = case_when(
+      scenario_type == "full_field" ~
+        coalesce(mamdani_pct, 0) +
+        coalesce(cuomo_pct, 0) +
+        coalesce(adams_pct, 0) +
+        coalesce(sliwa_pct, 0) +
+        coalesce(other_pct, 0) +
+        coalesce(undecided_pct, 0),
+      TRUE ~ NA_real_
+    ),
+    qc_flag = case_when(
+      is.na(row_sum) ~ "not_full_field",
+      row_sum < 96 ~ "below_band",
+      row_sum > 104 ~ "above_band",
+      TRUE ~ "within_band"
+    )
+  )
 
-primary <- clean %>%
-  mutate(scenario_rank = scenario_rank(scenario_type)) %>%
+# Identify outliers
+qc_outliers <- clean %>%
+  filter(qc_flag %in% c("below_band", "above_band")) %>%
+  select(pollster_wave_id, pollster, date_string, scenario_type, vote_status,
+         row_sum, qc_flag, mamdani_pct, cuomo_pct, adams_pct, sliwa_pct,
+         other_pct, undecided_pct)
+
+n_outliers <- nrow(qc_outliers)
+cat("Full-field rows:", sum(clean$scenario_type == "full_field", na.rm = TRUE), "\n")
+cat("Outliers (outside [96, 104]):", n_outliers, "\n")
+
+if (n_outliers > 0) {
+  cat("\nOutlier summary:\n")
+  print(table(qc_outliers$qc_flag))
+  cat("\nSample outliers:\n")
+  qc_outliers %>%
+    select(pollster, date_string, row_sum, qc_flag) %>%
+    head(5) %>%
+    print()
+}
+
+# Apply QC policy
+if (qc_policy == "renorm") {
+  cat("\nApplying renorm policy (max 6pt adjustment)...\n")
+
+  clean <- clean %>%
+    mutate(
+      adjustment_factor = case_when(
+        qc_flag == "within_band" ~ 1.0,
+        qc_flag == "not_full_field" ~ 1.0,
+        !is.na(row_sum) ~ pmin(pmax(100 / row_sum, 0.94), 1.06),  # Clamp to [0.94, 1.06]
+        TRUE ~ 1.0
+      )
+    ) %>%
+    mutate(
+      mamdani_pct = if_else(scenario_type == "full_field", mamdani_pct * adjustment_factor, mamdani_pct),
+      cuomo_pct = if_else(scenario_type == "full_field", cuomo_pct * adjustment_factor, cuomo_pct),
+      adams_pct = if_else(scenario_type == "full_field", adams_pct * adjustment_factor, adams_pct),
+      sliwa_pct = if_else(scenario_type == "full_field", sliwa_pct * adjustment_factor, sliwa_pct),
+      other_pct = if_else(scenario_type == "full_field", other_pct * adjustment_factor, other_pct),
+      undecided_pct = if_else(scenario_type == "full_field", undecided_pct * adjustment_factor, undecided_pct)
+    ) %>%
+    mutate(
+      # Recalculate counts with adjusted percentages
+      mamdani_n = round(sample_size * mamdani_pct / 100, 0),
+      cuomo_n = round(sample_size * cuomo_pct / 100, 0),
+      adams_n = round(sample_size * adams_pct / 100, 0),
+      sliwa_n = round(sample_size * sliwa_pct / 100, 0),
+      other_n = round(sample_size * other_pct / 100, 0),
+      undecided_n = round(sample_size * undecided_pct / 100, 0)
+    ) %>%
+    select(-adjustment_factor)
+
+  cat("✓ Renormalization applied (max adjustment: 6 pts)\n")
+
+} else if (qc_policy == "drop") {
+  cat("\nApplying drop policy...\n")
+
+  n_before <- nrow(clean)
+  clean <- clean %>%
+    filter(qc_flag %in% c("within_band", "not_full_field"))
+  n_after <- nrow(clean)
+
+  cat(glue("✓ Dropped {n_before - n_after} outlier rows\n"))
+
+} else if (qc_policy == "keep") {
+  cat("\nApplying keep policy (no changes)...\n")
+  cat("✓ All rows preserved\n")
+} else {
+  stop("Invalid qc_policy: ", qc_policy, ". Must be renorm, drop, or keep.")
+}
+
+# ==============================================================================
+# Create PRIMARY Rows File (One per Wave, Full-Field Top-4 Only)
+# ==============================================================================
+
+cat("\nSelecting primary rows (full-field only, top 4 majors)...\n")
+
+# Filter to full_field only
+full_field_only <- clean %>%
+  filter(scenario_type == "full_field")
+
+cat("Full-field rows:", nrow(full_field_only), "\n")
+
+# Fold walden into other for PRIMARY
+primary <- full_field_only %>%
+  mutate(
+    other_pct = coalesce(other_pct, 0) + coalesce(walden_pct, 0),
+    other_n = coalesce(other_n, 0) + coalesce(walden_n, 0),
+    walden_pct = NA_real_,
+    walden_n = NA_integer_
+  )
+
+# Selection criteria (one per wave):
+# 1. Highest wave_num_candidates (top 4 majors)
+# 2. Tie-breaker: largest sample_size
+
+primary <- primary %>%
   group_by(pollster_wave_id) %>%
-  arrange(desc(wave_num_candidates), desc(scenario_rank), desc(sample_size)) %>%
+  arrange(desc(wave_num_candidates), desc(sample_size)) %>%
   slice(1) %>%
-  ungroup() %>%
-  select(-scenario_rank)
+  ungroup()
 
-n_waves <- n_distinct(clean$pollster_wave_id)
+n_waves_total <- n_distinct(clean$pollster_wave_id)
+n_waves_full_field <- n_distinct(full_field_only$pollster_wave_id)
 n_primary <- nrow(primary)
 
-cat("Total waves:", n_waves, "\n")
+cat("Total waves (all scenarios):", n_waves_total, "\n")
+cat("Full-field waves:", n_waves_full_field, "\n")
 cat("Primary rows selected:", n_primary, "\n")
 
-# CRITICAL ASSERTION
-if (n_primary != n_waves) {
-  warning("WARNING: PRIMARY ROWS != WAVES: ", n_primary, " vs ", n_waves)
-  cat("\n!!! ASSERTION FAILED: Primary rows should equal wave count !!!\n\n")
+# CRITICAL ASSERTION: PRIMARY should have one row per full-field wave
+if (n_primary != n_waves_full_field) {
+  warning("WARNING: PRIMARY ROWS != FULL-FIELD WAVES: ", n_primary, " vs ", n_waves_full_field)
+  cat("\n!!! ASSERTION FAILED: Primary rows should equal full-field wave count !!!\n\n")
 } else {
-  cat("✓ PASS: Primary rows == wave count\n")
+  cat("✓ PASS: Primary rows == full-field wave count\n")
 }
 
 # Mark is_primary in clean dataset
@@ -455,12 +578,21 @@ md_content <- glue("
 - **Last poll:** {max(clean$date_median, na.rm = TRUE)}
 - **Days span:** {max(clean$days_since_first_poll, na.rm = TRUE)}
 
+## QC Band (Full-Field Rows)
+
+- **Policy:** {qc_policy}
+- **Band:** [96, 104]
+- **Full-field rows:** {sum(clean$scenario_type == 'full_field', na.rm = TRUE)}
+- **Outliers (outside band):** {n_outliers}
+- **Action:** {if (qc_policy == 'renorm') 'Renormalized with max 6pt adjustment' else if (qc_policy == 'drop') glue('Dropped {n_outliers} rows') else 'Kept all rows'}
+
 ## Poll Waves
 
-- **Total waves:** {n_waves}
+- **Total waves (all scenarios):** {n_waves_total}
+- **Full-field waves:** {n_waves_full_field}
 - **Primary rows selected:** {n_primary}
 - **Alternates dropped:** {nrow(alternates)}
-- **Assertion:** Primary rows == waves? **{if (n_primary == n_waves) 'PASS ✓' else 'FAIL ✗'}**
+- **Assertion:** Primary rows == full-field waves? **{if (n_primary == n_waves_full_field) 'PASS ✓' else 'FAIL ✗'}**
 - **Wave ID consistency:** {if (nrow(wave_id_check) == 0) 'PASS ✓ - Each (pollster, date, vote_status) has unique wave ID' else glue('FAIL ✗ - {nrow(wave_id_check)} groups have multiple IDs')}
 
 ## Scenario Types (PRIMARY rows)
@@ -510,9 +642,10 @@ md_content <- glue("
 ## Notes
 
 - Event marker rows excluded from modeling data
-- PRIMARY selection: full_field preference → max sample size
-- `pollster_wave_id` = pollster_slug + date_median (YYYYmmdd)
-- `candidates_in_poll` kept for diagnostics only (not for fixed effects)
+- **PRIMARY dataset:** Full-field scenarios only, top 4 majors (mamdani, cuomo, adams, sliwa)
+- **Walden folded into Other** for PRIMARY rows
+- QC band [96, 104] applied with policy: {qc_policy}
+- `pollster_wave_id` = pollster_slug + date_median (YYYYmmdd) + vote_status
 - `vote_status` (LV/RV/A) preserved for analysis
 
 ---
@@ -530,6 +663,9 @@ if (dryrun) {
   cat("  - Processed CSV:", output_processed, "(", nrow(clean), "rows )\n")
   cat("  - Primary CSV:", output_primary, "(", nrow(primary), "rows )\n")
   cat("  - Report:", report_file, "\n")
+  if (n_outliers > 0) {
+    cat("  - QC outliers CSV:", qc_outliers_file, "(", n_outliers, "rows )\n")
+  }
   cat("\nRe-run with --dryrun=false to write files.\n")
 } else {
   cat("\n=== Writing output files ===\n")
@@ -545,6 +681,12 @@ if (dryrun) {
   # Write PRIMARY rows file
   write_csv(primary, here(output_primary), na = "")
   cat("✓ PRIMARY rows:", output_primary, "(", nrow(primary), "rows )\n")
+
+  # Write QC outliers CSV (if any)
+  if (n_outliers > 0) {
+    write_csv(qc_outliers, here(qc_outliers_file), na = "")
+    cat("✓ QC outliers:", qc_outliers_file, "(", n_outliers, "rows )\n")
+  }
 
   # Write markdown summary
   writeLines(md_content, here(report_file))

@@ -181,8 +181,8 @@ cat("Generating Plot 1: Candidate % over time...\n")
 
 p1 <- cleaned_long %>%
   ggplot(aes(x = date_median, y = pct, color = candidate)) +
-  geom_line(alpha = 0.6, linewidth = 0.8) +
-  geom_point(alpha = 0.7, size = 2) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_smooth(se = FALSE, method = "loess", span = 0.7, linewidth = 1.2) +
   scale_color_manual(values = cs_palette) +
   labs(
     title = "Candidate Support Over Time (All Scenarios)",
@@ -220,10 +220,10 @@ margins <- cleaned %>%
 
 p2 <- margins %>%
   ggplot(aes(x = date_median, y = margin, color = margin_type)) +
-  geom_hline(yintercept = 0, color = "#39FF14", linetype = "dashed", linewidth = 0.8) +
-  geom_line(alpha = 0.6, linewidth = 0.8) +
-  geom_point(alpha = 0.7, size = 2) +
-  scale_color_manual(values = c("Mamdani Cuomo" = "#39FF14", "Mamdani Adams" = "#E6FF00")) +
+  geom_hline(yintercept = 0, color = "#B0B0B0", linetype = "dashed", linewidth = 0.8) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_smooth(se = FALSE, method = "loess", span = 0.7, linewidth = 1.2) +
+  scale_color_manual(values = c("Mamdani Cuomo" = "#73FF6B", "Mamdani Adams" = "#E6FF00")) +
   labs(
     title = "Polling Margins Over Time",
     subtitle = "Mamdani lead vs Cuomo and Adams",
@@ -324,7 +324,7 @@ p7 <- cleaned %>%
   ggplot(aes(x = cuomo_pct, y = mamdani_pct, color = vote_status, size = sample_size)) +
   geom_point(alpha = 0.6) +
   geom_smooth(method = "lm", se = TRUE, linewidth = 1, alpha = 0.3) +
-  scale_color_manual(values = c("LV" = "#39FF14", "RV" = "#D200FF", "A" = "#00E5FF")) +
+  scale_color_manual(values = c("LV" = "#73FF6B", "RV" = "#D200FF", "A" = "#00E5FF")) +
   scale_size_continuous(range = c(2, 10)) +
   labs(
     title = "Mamdani vs Cuomo Support",
@@ -349,11 +349,11 @@ p8 <- cleaned %>%
   ) %>%
   ggplot(aes(x = mamdani_cuomo, y = mamdani_adams)) +
   geom_hex(bins = 20) +
-  geom_abline(slope = 1, intercept = 0, color = "#39FF14", linetype = "dashed", linewidth = 0.8) +
-  scale_fill_gradient(low = "#1a1a1a", high = "#39FF14") +
+  geom_abline(slope = 1, intercept = 0, color = "#73FF6B", linetype = "dashed", linewidth = 0.8) +
+  scale_fill_gradient(low = "#1a1a1a", high = "#73FF6B") +
   labs(
     title = "Pairwise Margins: Mamdani Lead",
-    subtitle = "Mamdani-Cuomo vs Mamdani-Adams margins | Hexbin density",
+    subtitle = "Mamdani-Cuomo vs Mamdani-Adams margins | 45\u00b0 reference line",
     x = "Mamdani - Cuomo Margin",
     y = "Mamdani - Adams Margin",
     fill = "Count"
@@ -367,12 +367,12 @@ cat("Generating Plot 9: Percent sums histogram...\n")
 
 p9 <- cleaned %>%
   ggplot(aes(x = row_sum)) +
-  geom_histogram(bins = 30, fill = "#39FF14", alpha = 0.6, color = "#39FF14") +
+  geom_histogram(bins = 30, fill = "#73FF6B", alpha = 0.6, color = "#73FF6B") +
   geom_vline(xintercept = 100, color = "#D200FF", linetype = "dashed", linewidth = 1) +
-  geom_vline(xintercept = c(97, 103), color = "#FF6B00", linetype = "dotted", linewidth = 0.8) +
+  geom_vline(xintercept = c(96, 104), color = "#FF6B00", linetype = "dotted", linewidth = 0.8) +
   labs(
     title = "Percent Sum Distribution (All Rows)",
-    subtitle = glue("Rows < 97%: {n_low_sum} | Rows > 103%: {n_high_sum} | Dashed = 100%, Dotted = 97%/103%"),
+    subtitle = glue("Rows < 96%: {sum(cleaned$row_sum < 96, na.rm = TRUE)} | Rows > 104%: {sum(cleaned$row_sum > 104, na.rm = TRUE)} | QC band: [96, 104]"),
     x = "Row Sum (%)",
     y = "Count"
   ) +
@@ -388,9 +388,9 @@ p10 <- if (nrow(missingness) > 0) {
   missingness %>%
     mutate(column = fct_reorder(column, pct_missing)) %>%
     ggplot(aes(x = pct_missing, y = column)) +
-    geom_col(fill = "#39FF14", alpha = 0.6) +
+    geom_col(fill = "#73FF6B", alpha = 0.6) +
     geom_text(aes(label = sprintf("%.1f%%", pct_missing)),
-              hjust = -0.1, color = "#39FF14", size = 3) +
+              hjust = -0.1, color = "#73FF6B", size = 3) +
     labs(
       title = "Missingness by Column",
       subtitle = "Percentage of NA values per column",
@@ -402,7 +402,7 @@ p10 <- if (nrow(missingness) > 0) {
   ggplot() +
     annotate("text", x = 0.5, y = 0.5,
              label = "No missingness detected",
-             color = "#39FF14", size = 8) +
+             color = "#73FF6B", size = 8) +
     theme_void() +
     theme(plot.background = element_rect(fill = "black"))
 }
@@ -436,7 +436,7 @@ p11 <- if (nrow(scenario_comparison) > 0) {
     ungroup() %>%
     filter(!is_primary) %>%
     ggplot(aes(x = delta, y = scenario_type, color = candidate)) +
-    geom_vline(xintercept = 0, color = "#39FF14", linetype = "dashed") +
+    geom_vline(xintercept = 0, color = "#73FF6B", linetype = "dashed") +
     geom_point(alpha = 0.6, size = 3, position = position_jitter(height = 0.2)) +
     scale_color_manual(values = cs_palette) +
     labs(
@@ -450,7 +450,7 @@ p11 <- if (nrow(scenario_comparison) > 0) {
   ggplot() +
     annotate("text", x = 0.5, y = 0.5,
              label = "No scenario variants to compare",
-             color = "#39FF14", size = 8) +
+             color = "#73FF6B", size = 8) +
     theme_void() +
     theme(plot.background = element_rect(fill = "black"))
 }

@@ -5,14 +5,14 @@
 
 library(ggplot2)
 
-#' Neon theme with black background and bright grid
+#' Neon theme with black background and fainter grid
 my_awesome_theme <- function() {
   theme_minimal() +
     theme(
       plot.background = element_rect(fill = "black", color = NA),
       panel.background = element_rect(fill = "black", color = NA),
-      panel.grid.major = element_line(color = "#39FF14", linewidth = 0.3),
-      panel.grid.minor = element_line(color = "#39FF14", linewidth = 0.15),
+      panel.grid.major = element_line(color = "#1ED760", linewidth = 0.15, alpha = 0.30),
+      panel.grid.minor = element_line(color = "#1ED760", linewidth = 0.08, alpha = 0.20),
       text = element_text(color = "#39FF14", family = "mono"),
       axis.text = element_text(color = "#39FF14"),
       axis.title = element_text(color = "#39FF14", face = "bold"),
@@ -27,8 +27,9 @@ my_awesome_theme <- function() {
 }
 
 # Candidate color palette (neon accents)
+# NOTE: mamdani changed from #39FF14 to #73FF6B to avoid matching grid color #1ED760
 cs_palette <- c(
-  mamdani = "#39FF14",    # Neon green
+  mamdani = "#73FF6B",    # Neon green (lighter, distinct from grid)
   cuomo = "#D200FF",      # Neon magenta
   adams = "#E6FF00",      # Neon yellow
   sliwa = "#00E5FF",      # Neon cyan

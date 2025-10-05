@@ -39,13 +39,17 @@ Rscript R/01_scrape_wiki_nyc.R
 # 2a. Execute scrape
 Rscript R/01_scrape_wiki_nyc.R --dryrun=false
 
-# 3. Transform raw data (dry run)
+# 3. Transform raw data (dry run, default QC policy: renorm)
 Rscript R/02_clean_transform.R
 
-# 3a. Execute transform
+# 3a. Execute transform with renormalization (default)
 Rscript R/02_clean_transform.R --dryrun=false
 
-# 3b. Transform with custom input
+# 3b. Execute transform with custom QC policy
+Rscript R/02_clean_transform.R --qc_policy=drop --dryrun=false  # Drop outliers
+Rscript R/02_clean_transform.R --qc_policy=keep --dryrun=false  # Keep all rows
+
+# 3c. Transform with custom input
 Rscript R/02_clean_transform.R --input=data/raw/polls_20251005_092241.csv --dryrun=false
 
 # 4. EDA on cleaned data (dry run)
@@ -82,10 +86,21 @@ For comprehensive testing procedures, see [`TESTING.md`](TESTING.md) which inclu
 - **Feature branches:** `feat/*`, `fix/*`, `analysis/*`
 - **Commits:** Small, atomic, descriptive messages with timestamps in artifacts
 
+## Data Quality Control
+
+The transform pipeline applies a QC band [96, 104] to full-field scenario rows to ensure modeling-safe percent sums:
+
+- **renorm** (default): Rescale percentages with max 6pt adjustment (clamped to [0.94, 1.06])
+- **drop**: Remove rows outside QC band
+- **keep**: Preserve all rows without modification
+
+Outliers are logged to `analysis/qc_outliers_{timestamp}.csv` for review.
+
 ## Notes
 
 - Eric Adams withdrew on 2025-09-28; rows before/after retained for event analysis
-- Reallocation scenarios (pollster-provided) tracked separately
+- **PRIMARY dataset:** Full-field scenarios only, top 4 majors (mamdani, cuomo, adams, sliwa); walden folded into other
+- Reallocation scenarios (pollster-provided) tracked separately in CLEANED dataset
 - All outputs timestamped with `YYYYmmdd_HHMMSS` format
 
 ---

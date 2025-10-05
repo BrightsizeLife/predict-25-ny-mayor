@@ -21,38 +21,74 @@ This file describes how we validate each stage and how to run smoke tests locall
 
 ## 2) Transform tests (R/02_clean_transform.R)
 
-**Goal:** Verify date parsing, numeric conversion, scenario classification, wave deduplication
+**Goal:** Verify date parsing, numeric conversion, scenario classification, wave deduplication, QC band enforcement
 
 **Checklist:**
 - [ ] Date parsing rate: `date_median` non-NA for >95% of rows
 - [ ] Percentage to numeric: all `*_pct` columns in range [0,100] or NA
-- [ ] Row sums: For full_field rows, `sum(mamdani_pct + cuomo_pct + adams_pct + sliwa_pct + other_pct + undecided_pct)` in [95,105]
-- [ ] Scenario histogram: Counts for full_field, adams_removed, head_to_head_* look reasonable (~30, ~8, ~20)
-- [ ] **Primary rows == #waves**: `nrow(primary) == n_distinct(clean$pollster_wave_id)` (MUST be TRUE)
+- [ ] **QC band:** For full_field rows with qc_policy=renorm, row sums in [96, 104] after adjustment
+- [ ] **QC outliers:** Outliers logged to `analysis/qc_outliers_{ts}.csv` with correct row_sum and qc_flag
+- [ ] **QC policies work:** renorm (default), drop, keep produce expected row counts
+- [ ] **PRIMARY = full-field only:** All PRIMARY rows have scenario_type == "full_field"
+- [ ] **Walden folded:** In PRIMARY, walden_pct is NA and walden counts added to other_pct
+- [ ] **Primary rows == #full-field waves**: `nrow(primary) == n_distinct(filter(clean, scenario_type == 'full_field')$pollster_wave_id)` (MUST be TRUE)
 - [ ] Wave IDs: No duplicate `pollster_wave_id` in primary CSV
 - [ ] Sample size preservation: `sum(primary$sample_size)` roughly equals sum of primary-flagged rows in cleaned CSV
 
 **Commands:**
 ```bash
-# Run transform (dry run - default)
+# Run transform (dry run - default with renorm)
 Rscript R/02_clean_transform.R
 
-# Run transform (execute)
+# Run transform (execute with renorm - default)
 Rscript R/02_clean_transform.R --dryrun=false
+
+# Run transform with different QC policies
+Rscript R/02_clean_transform.R --qc_policy=drop --dryrun=false
+Rscript R/02_clean_transform.R --qc_policy=keep --dryrun=false
 
 # Verify outputs exist
 ls -lh data/processed/polls_cleaned_*.csv
 ls -lh data/processed/polls_primary_*.csv
+ls -lh analysis/qc_outliers_*.csv  # Only if outliers exist
 
-# Check primary rows == waves assertion (CRITICAL)
+# Check QC band enforcement (renorm policy)
+Rscript -e "
+  library(tidyverse)
+  c <- read_csv(list.files('data/processed', pattern='cleaned.*csv\$', full.names=TRUE)[1], show_col_types=FALSE)
+  ff <- c %>% filter(scenario_type == 'full_field')
+  ff <- ff %>% mutate(
+    row_sum = coalesce(as.numeric(mamdani_pct), 0) + coalesce(as.numeric(cuomo_pct), 0) +
+              coalesce(as.numeric(adams_pct), 0) + coalesce(as.numeric(sliwa_pct), 0) +
+              coalesce(as.numeric(other_pct), 0) + coalesce(as.numeric(undecided_pct), 0)
+  )
+  cat('Full-field rows:', nrow(ff), '\n')
+  cat('Row sums < 96:', sum(ff\$row_sum < 96, na.rm=TRUE), '\n')
+  cat('Row sums > 104:', sum(ff\$row_sum > 104, na.rm=TRUE), '\n')
+  cat('✓ PASS: QC band enforced\n')
+"
+
+# Check PRIMARY = full-field only
 Rscript -e "
   library(tidyverse)
   p <- read_csv(list.files('data/processed', pattern='primary.*csv\$', full.names=TRUE)[1], show_col_types=FALSE)
-  n_rows <- nrow(p)
-  n_waves <- n_distinct(p\$pollster_wave_id)
-  cat('Primary rows:', n_rows, '| Unique waves:', n_waves, '\n')
-  stopifnot(n_rows == n_waves)
-  cat('✓ PASS: Primary rows == waves\n')
+  non_ff <- p %>% filter(scenario_type != 'full_field')
+  cat('Primary rows:', nrow(p), '\n')
+  cat('Non-full-field rows in PRIMARY:', nrow(non_ff), '\n')
+  stopifnot(nrow(non_ff) == 0)
+  cat('✓ PASS: PRIMARY = full-field only\n')
+"
+
+# Check primary rows == full-field waves assertion (CRITICAL)
+Rscript -e "
+  library(tidyverse)
+  p <- read_csv(list.files('data/processed', pattern='primary.*csv\$', full.names=TRUE)[1], show_col_types=FALSE)
+  c <- read_csv(list.files('data/processed', pattern='cleaned.*csv\$', full.names=TRUE)[1], show_col_types=FALSE)
+  n_primary <- nrow(p)
+  n_ff_waves <- n_distinct(c %>% filter(scenario_type == 'full_field') %>% pull(pollster_wave_id))
+  cat('Primary rows:', n_primary, '| Full-field waves:', n_ff_waves, '\n')
+  stopifnot(n_primary == n_ff_waves)
+  cat('✓ PASS: Primary rows == full-field waves\n')
 "
 
 # View report
@@ -60,9 +96,10 @@ cat analysis/02_transform_report_*.md
 ```
 
 **Artifacts:**
-- `data/processed/polls_cleaned_YYYYmmdd_HHMMSS.csv` (all non-event rows)
-- `data/processed/polls_primary_YYYYmmdd_HHMMSS.csv` (one per wave)
-- `analysis/02_transform_report_YYYYmmdd_HHMMSS.md`
+- `data/processed/polls_cleaned_YYYYmmdd_HHMMSS.csv` (all non-event rows, QC-adjusted)
+- `data/processed/polls_primary_YYYYmmdd_HHMMSS.csv` (full-field only, one per wave, walden→other)
+- `analysis/02_transform_report_YYYYmmdd_HHMMSS.md` (includes QC stats)
+- `analysis/qc_outliers_YYYYmmdd_HHMMSS.csv` (if outliers exist)
 
 ## 3) EDA tests (R/03_eda_plots.R)
 
