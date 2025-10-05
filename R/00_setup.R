@@ -25,6 +25,7 @@ packages <- c(
   "modelr",         # Data grids for predictions
   "here",           # Path management
   "glue",           # String interpolation
+  "digest",         # Hash functions for data validation
 
   # Plotting
   "patchwork",      # Multi-panel plots
