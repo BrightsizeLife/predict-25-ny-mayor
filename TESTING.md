@@ -19,14 +19,50 @@ This file describes how we validate each stage and how to run smoke tests locall
 
 **Artifacts:** `data/raw/polls_YYYYmmdd_HHMMSS.csv` (+ optional html snapshot)
 
-## 2) Cleaning tests (R/02_clean_transform.R)
-- Date range → median; keep original string
-- Parse `sample_size_raw` → `sample_size` + `vote_status` ∈ {LV, RV, A}
-- Normalize to columns: mamdani, cuomo, adams, sliwa, other, undecided; fold Walden → other
-- Percent sanity: sum in [95, 105]; log outliers
-- Counts: `*_n = round(sample_size * pct / 100)`
+## 2) Transform tests (R/02_clean_transform.R)
 
-**Artifact:** `data/processed/polls_cleaned_YYYYmmdd_HHMMSS.csv`
+**Goal:** Verify date parsing, numeric conversion, scenario classification, wave deduplication
+
+**Checklist:**
+- [ ] Date parsing rate: `date_median` non-NA for >95% of rows
+- [ ] Percentage to numeric: all `*_pct` columns in range [0,100] or NA
+- [ ] Row sums: For full_field rows, `sum(mamdani_pct + cuomo_pct + adams_pct + sliwa_pct + other_pct + undecided_pct)` in [95,105]
+- [ ] Scenario histogram: Counts for full_field, adams_removed, head_to_head_* look reasonable (~30, ~8, ~20)
+- [ ] **Primary rows == #waves**: `nrow(primary) == n_distinct(clean$pollster_wave_id)` (MUST be TRUE)
+- [ ] Wave IDs: No duplicate `pollster_wave_id` in primary CSV
+- [ ] Sample size preservation: `sum(primary$sample_size)` roughly equals sum of primary-flagged rows in cleaned CSV
+
+**Commands:**
+```bash
+# Run transform (dry run - default)
+Rscript R/02_clean_transform.R
+
+# Run transform (execute)
+Rscript R/02_clean_transform.R --dryrun=false
+
+# Verify outputs exist
+ls -lh data/processed/polls_cleaned_*.csv
+ls -lh data/processed/polls_primary_*.csv
+
+# Check primary rows == waves assertion (CRITICAL)
+Rscript -e "
+  library(tidyverse)
+  p <- read_csv(list.files('data/processed', pattern='primary.*csv\$', full.names=TRUE)[1], show_col_types=FALSE)
+  n_rows <- nrow(p)
+  n_waves <- n_distinct(p\$pollster_wave_id)
+  cat('Primary rows:', n_rows, '| Unique waves:', n_waves, '\n')
+  stopifnot(n_rows == n_waves)
+  cat('✓ PASS: Primary rows == waves\n')
+"
+
+# View report
+cat analysis/02_transform_report_*.md
+```
+
+**Artifacts:**
+- `data/processed/polls_cleaned_YYYYmmdd_HHMMSS.csv` (all non-event rows)
+- `data/processed/polls_primary_YYYYmmdd_HHMMSS.csv` (one per wave)
+- `analysis/02_transform_report_YYYYmmdd_HHMMSS.md`
 
 ## 3) EDA tests (R/03_eda_plots.R)
 - Time-series per candidate; save `plots/EDA_*_YYYYmmdd_HHMMSS.png`
@@ -58,10 +94,16 @@ Rscript scripts/check_env.R
 # Scrape
 Rscript R/01_scrape_wiki_nyc.R --dryrun=false
 
-# Clean
+# Transform (dry run)
+Rscript R/02_clean_transform.R
+
+# Transform (execute)
+Rscript R/02_clean_transform.R --dryrun=false
+
+# Transform with custom input
 Rscript R/02_clean_transform.R \
-  --input data/raw/polls_YYYYmmdd_HHMMSS.csv \
-  --output data/processed/polls_cleaned_YYYYmmdd_HHMMSS.csv
+  --input=data/raw/polls_20251005_092241.csv \
+  --dryrun=false
 
 # EDA
 Rscript R/03_eda_plots.R --input data/processed/polls_cleaned_*.csv

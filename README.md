@@ -9,6 +9,11 @@ This project reproduces a presidential-model workflow for the 2025 NYC mayoral g
 - **Model:** Bayesian multinomial regression with splines + random effects (brms)
 - **Candidates:** Mamdani (D), Cuomo (I), Adams (withdrawn 2025-09-28), Sliwa (R), Other
 
+## Data
+
+- **Raw polling data**: Scraped Wikipedia tables stored in `data/raw/polls_YYYYmmdd_HHMMSS.csv` (timestamped, immutable)
+- **Processed data**: Cleaned and model-ready CSVs in `data/processed/` with wave identifiers, scenario types, and candidate percentages/counts
+
 ## Project Structure
 
 ```
@@ -24,24 +29,33 @@ scripts/                # Helper utilities
 
 ## Quick Start
 
-```r
+```bash
 # 1. Install dependencies
-source("R/00_setup.R")
+Rscript R/00_setup.R
 
-# 2. Scrape latest polls
-source("R/01_scrape_wiki_nyc.R")
+# 2. Scrape latest polls (dry run)
+Rscript R/01_scrape_wiki_nyc.R
 
-# 3. Clean and transform
-source("R/02_clean_transform.R")
+# 2a. Execute scrape
+Rscript R/01_scrape_wiki_nyc.R --dryrun=false
 
-# 4. EDA
-source("R/03_eda_plots.R")
+# 3. Transform raw data (dry run)
+Rscript R/02_clean_transform.R
 
-# 5. Fit models
-source("R/04_fit_models.R")
+# 3a. Execute transform
+Rscript R/02_clean_transform.R --dryrun=false
 
-# 6. Compare via LOO
-source("R/05_compare_loo.R")
+# 3b. Transform with custom input
+Rscript R/02_clean_transform.R --input=data/raw/polls_20251005_092241.csv --dryrun=false
+
+# 4. EDA (coming soon)
+# Rscript R/03_eda_plots.R --input data/processed/polls_primary_*.csv
+
+# 5. Fit models (coming soon)
+# Rscript R/04_fit_models.R --input data/processed/polls_primary_*.csv
+
+# 6. Compare via LOO (coming soon)
+# Rscript R/05_compare_loo.R --models artifacts/models/*.rds
 ```
 
 ## Testing
