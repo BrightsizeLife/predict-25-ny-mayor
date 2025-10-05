@@ -1,0 +1,44 @@
+# R session files
+*.Rhistory
+*.RData
+*.Rproj.user
+.Rproj.user/
+
+# RStudio project files
+*.Rproj
+
+# renv
+renv/
+.Rprofile.local
+
+# Stan cache
+.cmdstanr/
+.stan_cache/
+
+# Data files (keep directory structure, ignore contents)
+data/raw/*.csv
+data/processed/*.csv
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Model artifacts
+artifacts/models/*.rds
+!artifacts/models/.gitkeep
+
+# Analysis outputs
+analysis/*.md
+analysis/*.html
+!analysis/.gitkeep
+
+# Plots
+plots/*.png
+plots/*.pdf
+!plots/.gitkeep
+
+# macOS
+.DS_Store
+
+# Temporary files
+*.swp
+*.swo
+*~
