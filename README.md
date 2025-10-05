@@ -44,6 +44,21 @@ source("R/04_fit_models.R")
 source("R/05_compare_loo.R")
 ```
 
+## Testing
+
+Before running analysis scripts, verify your environment:
+
+```bash
+Rscript scripts/check_env.R
+```
+
+For comprehensive testing procedures, see [`TESTING.md`](TESTING.md) which includes:
+- Environment smoke tests
+- Scraper validation (selector stability, rowspan handling, footnote stripping)
+- Data cleaning checks (date parsing, candidate normalization, sanity checks)
+- Model convergence criteria
+- Reproducibility verification
+
 ## Git Workflow
 
 - **Main branch:** `main` (stable releases only)
