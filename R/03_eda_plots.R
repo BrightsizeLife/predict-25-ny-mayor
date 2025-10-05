@@ -415,6 +415,7 @@ cat("Generating Plot 11: Scenario deltas...\n")
 
 scenario_comparison <- cleaned %>%
   filter(pollster_wave_id %in% waves_with_alternates$pollster_wave_id) %>%
+  mutate(is_primary = as.logical(is_primary)) %>%
   select(pollster_wave_id, scenario_type, is_primary,
          mamdani_pct, cuomo_pct, adams_pct, sliwa_pct) %>%
   pivot_longer(
