@@ -80,7 +80,8 @@ cleaned <- read_csv(input_cleaned, col_types = cols(.default = "c"), show_col_ty
     across(ends_with("_pct"), as.numeric),
     sample_size = as.numeric(sample_size),
     pre_post_adams_withdrawal = as.logical(pre_post_adams_withdrawal)
-  )
+  ) %>%
+  filter(scenario_type == "full_field")  # Focus on full-field only
 
 primary <- if (!is.null(input_primary)) {
   read_csv(input_primary, col_types = cols(.default = "c"), show_col_types = FALSE) %>%
@@ -93,7 +94,7 @@ primary <- if (!is.null(input_primary)) {
   NULL
 }
 
-cat("Cleaned data:", nrow(cleaned), "rows\n")
+cat("Cleaned data (full-field only):", nrow(cleaned), "rows\n")
 if (!is.null(primary)) cat("Primary data:", nrow(primary), "rows\n")
 
 # ==============================================================================
@@ -185,8 +186,8 @@ p1 <- cleaned_long %>%
   geom_smooth(se = FALSE, method = "loess", span = 0.7, linewidth = 1.2) +
   scale_color_manual(values = cs_palette) +
   labs(
-    title = "Candidate Support Over Time (All Scenarios)",
-    subtitle = glue("N={n_rows_cleaned} rows | {min_date} to {max_date}"),
+    title = "Candidate Support Over Time (Full-Field Scenarios)",
+    subtitle = glue("N={n_rows_cleaned} full-field polls | {min_date} to {max_date}"),
     x = "Poll Date (Median)",
     y = "Support (%)",
     color = "Candidate"
@@ -225,7 +226,7 @@ p2 <- margins %>%
   geom_smooth(se = FALSE, method = "loess", span = 0.7, linewidth = 1.2) +
   scale_color_manual(values = c("Mamdani Cuomo" = "#73FF6B", "Mamdani Adams" = "#E6FF00")) +
   labs(
-    title = "Polling Margins Over Time",
+    title = "Polling Margins Over Time (Full-Field)",
     subtitle = "Mamdani lead vs Cuomo and Adams",
     x = "Poll Date (Median)",
     y = "Margin (percentage points)",
@@ -371,12 +372,11 @@ p9 <- cleaned %>%
   geom_vline(xintercept = 100, color = "#D200FF", linetype = "dashed", linewidth = 1) +
   geom_vline(xintercept = c(96, 104), color = "#FF6B00", linetype = "dotted", linewidth = 0.8) +
   labs(
-    title = "Percent Sum Distribution (All Rows)",
+    title = "Percent Sum Distribution (Full-Field Only)",
     subtitle = glue("Rows < 96%: {sum(cleaned$row_sum < 96, na.rm = TRUE)} | Rows > 104%: {sum(cleaned$row_sum > 104, na.rm = TRUE)} | QC band: [96, 104]"),
     x = "Row Sum (%)",
     y = "Count"
-  ) +
-  facet_wrap(~scenario_type, scales = "free_y")
+  )
 
 # ==============================================================================
 # Plot 10: Missingness Heatmap
@@ -408,15 +408,15 @@ p10 <- if (nrow(missingness) > 0) {
 }
 
 # ==============================================================================
-# Plot 11: Scenario Deltas (Alternates vs Primary)
+# Plot 11: Full-Field Variants (within-wave deltas)
 # ==============================================================================
 
-cat("Generating Plot 11: Scenario deltas...\n")
+cat("Generating Plot 11: Full-field variant deltas...\n")
 
 scenario_comparison <- cleaned %>%
   filter(pollster_wave_id %in% waves_with_alternates$pollster_wave_id) %>%
   mutate(is_primary = as.logical(is_primary)) %>%
-  select(pollster_wave_id, scenario_type, is_primary,
+  select(pollster_wave_id, is_primary, wave_num_candidates,
          mamdani_pct, cuomo_pct, adams_pct, sliwa_pct) %>%
   pivot_longer(
     cols = ends_with("_pct"),
@@ -435,21 +435,21 @@ p11 <- if (nrow(scenario_comparison) > 0) {
     ) %>%
     ungroup() %>%
     filter(!is_primary) %>%
-    ggplot(aes(x = delta, y = scenario_type, color = candidate)) +
-    geom_vline(xintercept = 0, color = "#73FF6B", linetype = "dashed") +
+    ggplot(aes(x = delta, y = as.factor(wave_num_candidates), color = candidate)) +
+    geom_vline(xintercept = 0, color = "#B0B0B0", linetype = "dashed") +
     geom_point(alpha = 0.6, size = 3, position = position_jitter(height = 0.2)) +
     scale_color_manual(values = cs_palette) +
     labs(
-      title = "Scenario Variant Deltas vs Primary",
-      subtitle = "Difference from primary selection (full_field with max candidates)",
+      title = "Full-Field Variant Deltas (Within-Wave)",
+      subtitle = "Difference from primary row (max candidates) within same poll wave",
       x = "Delta from Primary (%)",
-      y = "Scenario Type",
+      y = "Number of Candidates",
       color = "Candidate"
     )
 } else {
   ggplot() +
     annotate("text", x = 0.5, y = 0.5,
-             label = "No scenario variants to compare",
+             label = "No full-field variants to compare",
              color = "#73FF6B", size = 8) +
     theme_void() +
     theme(plot.background = element_rect(fill = "black"))
@@ -485,7 +485,7 @@ p12 <- if (!is.null(primary)) {
     ) %>%
     mutate(
       candidate = str_remove(candidate, "_pct"),
-      source = "All (Cleaned)"
+      source = "All (Full-Field)"
     )
 
   combined <- bind_rows(cleaned_comp, primary_long) %>%
@@ -494,10 +494,10 @@ p12 <- if (!is.null(primary)) {
   combined %>%
     ggplot(aes(x = pct, fill = source)) +
     geom_density(alpha = 0.5) +
-    scale_fill_manual(values = c("Primary" = "#39FF14", "All (Cleaned)" = "#D200FF")) +
+    scale_fill_manual(values = c("Primary" = "#73FF6B", "All (Full-Field)" = "#D200FF")) +
     labs(
-      title = "Primary Selection vs All Scenarios",
-      subtitle = "Overlaid density plots comparing distributions",
+      title = "Primary vs All Full-Field Rows",
+      subtitle = "PRIMARY (one per wave) vs ALL full-field variants",
       x = "Support (%)",
       y = "Density",
       fill = "Data Source"
@@ -507,7 +507,7 @@ p12 <- if (!is.null(primary)) {
   ggplot() +
     annotate("text", x = 0.5, y = 0.5,
              label = "Primary data not provided",
-             color = "#39FF14", size = 8) +
+             color = "#73FF6B", size = 8) +
     theme_void() +
     theme(plot.background = element_rect(fill = "black"))
 }
