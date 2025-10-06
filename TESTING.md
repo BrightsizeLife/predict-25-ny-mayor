@@ -147,10 +147,53 @@ Rscript R/03_eda_plots.R \
 11. Scenario variant deltas
 12. Primary vs All comparison (if primary data provided)
 
-## 4) Modeling tests (R/04_fit_models.R, R/05_compare_loo.R)
-- brms multinomial; `(1|pollster)+(1|vote_status)`; time as linear and splines df=3,4,5
-- Convergence: R-hat≈1; sufficient ESS; tune `adapt_delta` if needed
-- LOO compare; write `analysis/model_compare_YYYYmmdd_HHMMSS.md`
+## 4) Modeling tests (R/04_fit_models.R)
+
+**Goal:** Fit 4 baseline multinomial models (M0-M3), validate convergence, compare via LOO
+
+**Models:**
+- **M0:** `~ 1` (intercept only)
+- **M1:** `~ 1 + (1 | pollster)`
+- **M2:** `~ 1 + (1 | pollster) + (1 | vote_status)`
+- **M3:** `~ 1 + (1 | pollster) + (1 | vote_status) + (1 | pollster_wave_id)`
+
+**Family:** `multinomial(refcat = "mamdani")`
+
+**Checklist:**
+- [ ] All 4 models fit successfully
+- [ ] Rhat < 1.01 for all parameters
+- [ ] Bulk ESS > 400, Tail ESS > 400
+- [ ] Divergences = 0 (or minimal with adapt_delta=0.99)
+- [ ] LOO computed for all models
+- [ ] LOO comparison table generated
+- [ ] Random intercepts plots saved (M1, M2, M3)
+- [ ] Diagnostics report created
+
+**Commands:**
+```bash
+# Smoke test (fast, 2 chains, 1000 iter)
+Rscript R/04_fit_models.R --smoke=true
+
+# Full run (4 chains, 4000 iter, default cores)
+Rscript R/04_fit_models.R
+
+# Custom settings
+Rscript R/04_fit_models.R --chains=4 --iter=6000 --warmup=3000 --seed=5678
+
+# With re-loo for problematic observations
+Rscript R/04_fit_models.R --reloo=true
+```
+
+**Artifacts:**
+- `artifacts/models/{timestamp}_M0.rds` ... `{timestamp}_M3.rds`
+- `plots/{timestamp}_ri_M1.png`, `ri_M2.png`, `ri_M3.png` (random intercepts)
+- `analysis/04_model_diagnostics_{timestamp}.md`
+
+**Expected output:**
+- 4 RDS files (M0-M3)
+- 3 RI plots (M1-M3)
+- Diagnostics markdown with LOO comparison table
+- Seed-reproducible results
 
 ## 5) Events (R/06_explore_events.R)
 - Pre/Post around 2025-09-28 (Adams withdrawal) ±14 days; density plots; summary tables

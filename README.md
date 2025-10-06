@@ -58,11 +58,14 @@ Rscript R/03_eda_plots.R
 # 4a. Execute EDA
 Rscript R/03_eda_plots.R --dryrun=false
 
-# 5. Fit models (coming soon)
-# Rscript R/04_fit_models.R --input data/processed/polls_primary_*.csv
+# 5. Fit multinomial models (smoke test - fast)
+Rscript R/04_fit_models.R --smoke=true
 
-# 6. Compare via LOO (coming soon)
-# Rscript R/05_compare_loo.R --models artifacts/models/*.rds
+# 5a. Full model fitting (4 chains, 4000 iter)
+Rscript R/04_fit_models.R
+
+# 5b. Custom settings (more iterations, specific seed)
+Rscript R/04_fit_models.R --chains=4 --iter=6000 --warmup=3000 --seed=5678
 ```
 
 ## Testing
@@ -95,6 +98,44 @@ The transform pipeline applies a QC band [96, 104] to full-field scenario rows t
 - **keep**: Preserve all rows without modification
 
 Outliers are logged to `analysis/qc_outliers_{timestamp}.csv` for review.
+
+## Modeling
+
+The project fits 4 baseline Bayesian multinomial models using `brms`:
+
+**Models:**
+- **M0:** Intercept-only (pooled baseline)
+- **M1:** Random pollster effects
+- **M2:** Random pollster + vote_status effects
+- **M3:** Random pollster + vote_status + wave effects (maximal structure)
+
+**Key Features:**
+- **Family:** `multinomial(refcat = "mamdani")` - mamdani as reference category
+- **Outcome:** 6-category counts (mamdani, cuomo, adams, sliwa, other, undecided)
+- **Backend:** `cmdstanr` (if available) with parallel chains
+- **Reproducibility:** Fixed seeds, timestamped artifacts
+- **Diagnostics:** Automatic Rhat/ESS checks, divergence monitoring, LOO comparison
+- **Cores:** Default uses `max(1, detectCores() - 2)` to avoid overloading system
+
+**Smoke Testing:**
+Use `--smoke=true` for rapid validation (2 chains, 1000 iter, 500 warmup):
+```bash
+Rscript R/04_fit_models.R --smoke=true
+```
+
+**Full Runs:**
+```bash
+# Default (4 chains, 4000 iter, 2000 warmup)
+Rscript R/04_fit_models.R
+
+# Custom cores (useful for large machines)
+Rscript R/04_fit_models.R --cores=8
+```
+
+**Outputs:**
+- Model fits: `artifacts/models/{timestamp}_M0.rds` ... `M3.rds`
+- Random intercepts: `plots/{timestamp}_ri_M{1-3}.png`
+- Diagnostics report: `analysis/04_model_diagnostics_{timestamp}.md` (includes LOO table)
 
 ## Notes
 
