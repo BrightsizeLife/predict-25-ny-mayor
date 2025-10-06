@@ -387,13 +387,13 @@ if (qc_policy == "renorm") {
 # Create PRIMARY Rows File (One per Wave, Full-Field Top-4 Only)
 # ==============================================================================
 
-cat("\nSelecting primary rows (full-field only, top 4 majors)...\n")
+cat("\nSelecting primary rows (full-field only, top 4 majors + other/undecided)...\n")
 
 # Filter to full_field only
 full_field_only <- clean %>%
   filter(scenario_type == "full_field")
 
-cat("Full-field rows:", nrow(full_field_only), "\n")
+cat("Full-field rows (scenario_type):", nrow(full_field_only), "\n")
 
 # Fold walden into other for PRIMARY
 primary <- full_field_only %>%
@@ -403,6 +403,17 @@ primary <- full_field_only %>%
     walden_pct = NA_real_,
     walden_n = NA_integer_
   )
+
+# Apply FULL-FIELD definition:
+# - All 4 majors present: {mamdani, cuomo, adams, sliwa}
+# - At least one of {other, undecided} present
+primary <- primary %>%
+  filter(
+    !is.na(mamdani_pct) & !is.na(cuomo_pct) & !is.na(adams_pct) & !is.na(sliwa_pct),
+    !is.na(other_pct) | !is.na(undecided_pct)
+  )
+
+cat("After FULL-FIELD filter (top-4 + other/undecided):", nrow(primary), "\n")
 
 # Selection criteria (one per wave):
 # 1. Highest wave_num_candidates (top 4 majors)
@@ -416,18 +427,26 @@ primary <- primary %>%
 
 n_waves_total <- n_distinct(clean$pollster_wave_id)
 n_waves_full_field <- n_distinct(full_field_only$pollster_wave_id)
+n_waves_full_field_strict <- n_distinct(primary$pollster_wave_id)
 n_primary <- nrow(primary)
 
 cat("Total waves (all scenarios):", n_waves_total, "\n")
-cat("Full-field waves:", n_waves_full_field, "\n")
+cat("Full-field waves (scenario_type):", n_waves_full_field, "\n")
+cat("Full-field waves (strict: top-4 + other/undecided):", n_waves_full_field_strict, "\n")
 cat("Primary rows selected:", n_primary, "\n")
 
-# CRITICAL ASSERTION: PRIMARY should have one row per full-field wave
-if (n_primary != n_waves_full_field) {
-  warning("WARNING: PRIMARY ROWS != FULL-FIELD WAVES: ", n_primary, " vs ", n_waves_full_field)
-  cat("\n!!! ASSERTION FAILED: Primary rows should equal full-field wave count !!!\n\n")
+# CRITICAL ASSERTION: PRIMARY should have one row per strict full-field wave
+if (n_primary != n_waves_full_field_strict) {
+  warning("WARNING: PRIMARY ROWS != STRICT FULL-FIELD WAVES: ", n_primary, " vs ", n_waves_full_field_strict)
+  cat("\n!!! ASSERTION FAILED: Primary rows should equal strict full-field wave count !!!\n\n")
 } else {
-  cat("✓ PASS: Primary rows == full-field wave count\n")
+  cat("✓ PASS: Primary rows == strict full-field wave count\n")
+}
+
+# Report how many waves were excluded by strict filter
+n_excluded <- n_waves_full_field - n_waves_full_field_strict
+if (n_excluded > 0) {
+  cat("Note:", n_excluded, "full-field waves excluded (missing other/undecided)\n")
 }
 
 # Mark is_primary in clean dataset

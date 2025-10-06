@@ -183,7 +183,7 @@ cat("Generating Plot 1: Candidate % over time...\n")
 p1 <- cleaned_long %>%
   ggplot(aes(x = date_median, y = pct, color = candidate)) +
   geom_point(alpha = 0.5, size = 2) +
-  geom_smooth(se = FALSE, method = "loess", span = 0.7, linewidth = 1.2) +
+  geom_smooth(se = FALSE, method = "loess", span = 0.9, linewidth = 1.2) +
   scale_color_manual(values = cs_palette) +
   labs(
     title = "Candidate Support Over Time (Full-Field Scenarios)",
@@ -223,7 +223,7 @@ p2 <- margins %>%
   ggplot(aes(x = date_median, y = margin, color = margin_type)) +
   geom_hline(yintercept = 0, color = "#B0B0B0", linetype = "dashed", linewidth = 0.8) +
   geom_point(alpha = 0.5, size = 2) +
-  geom_smooth(se = FALSE, method = "loess", span = 0.7, linewidth = 1.2) +
+  geom_smooth(se = FALSE, method = "loess", span = 0.9, linewidth = 1.2) +
   scale_color_manual(values = c("Mamdani Cuomo" = "#73FF6B", "Mamdani Adams" = "#E6FF00")) +
   labs(
     title = "Polling Margins Over Time (Full-Field)",
