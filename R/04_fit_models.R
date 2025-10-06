@@ -164,9 +164,9 @@ cat("  Vote status:", paste(unique(primary$vote_status), collapse = ", "), "\n\n
 
 cat("Defining models...\n")
 
-# Reference category: mamdani (first in order)
-# Family: multinomial with refcat
-family_spec <- multinomial(refcat = "mamdani")
+# Reference category: num_mamdani (first in cbind order)
+# Family: multinomial with refcat specified by column position (1 = first)
+family_spec <- multinomial(refcat = 1)
 
 # Formulas
 formula_M0 <- bf(
