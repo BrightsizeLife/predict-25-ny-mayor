@@ -145,6 +145,34 @@ primary <- primary %>%
 primary <- primary %>%
   mutate(across(starts_with("num_"), ~coalesce(., 0L)))
 
+# Verify trials = sum of events, adjust if needed due to rounding
+primary <- primary %>%
+  mutate(
+    count_sum = num_mamdani + num_cuomo + num_adams + num_sliwa + num_other + num_undecided,
+    diff = sample_size - count_sum
+  )
+
+# Adjust largest category to absorb rounding error
+if (any(primary$diff != 0)) {
+  cat("Adjusting", sum(primary$diff != 0), "rows for rounding errors\n")
+  primary <- primary %>%
+    rowwise() %>%
+    mutate(
+      # Find which category has the largest count to adjust
+      max_cat = which.max(c(num_mamdani, num_cuomo, num_adams, num_sliwa, num_other, num_undecided)),
+      num_mamdani = if_else(max_cat == 1, num_mamdani + diff, num_mamdani),
+      num_cuomo = if_else(max_cat == 2, num_cuomo + diff, num_cuomo),
+      num_adams = if_else(max_cat == 3, num_adams + diff, num_adams),
+      num_sliwa = if_else(max_cat == 4, num_sliwa + diff, num_sliwa),
+      num_other = if_else(max_cat == 5, num_other + diff, num_other),
+      num_undecided = if_else(max_cat == 6, num_undecided + diff, num_undecided)
+    ) %>%
+    ungroup() %>%
+    select(-count_sum, -diff, -max_cat)
+} else {
+  primary <- primary %>% select(-count_sum, -diff)
+}
+
 cat("✓ Counts built\n\n")
 
 # Data summary
@@ -165,8 +193,8 @@ cat("  Vote status:", paste(unique(primary$vote_status), collapse = ", "), "\n\n
 cat("Defining models...\n")
 
 # Reference category: num_mamdani (first in cbind order)
-# Family: multinomial with refcat specified by column position (1 = first)
-family_spec <- multinomial(refcat = 1)
+# Family: multinomial with refcat specified
+family_spec <- multinomial(refcat = "num_mamdani")
 
 # Formulas
 formula_M0 <- bf(
@@ -190,13 +218,13 @@ formula_M3 <- bf(
 )
 
 models <- list(
-  M0 = formula_M0,
-  M1 = formula_M1,
-  M2 = formula_M2,
-  M3 = formula_M3
+  m00_intercept = formula_M0,
+  m01_ri_pollster = formula_M1,
+  m02_ri_pollster_vstatus = formula_M2,
+  m03_ri_pollster_vstatus_wave = formula_M3
 )
 
-cat("✓ Models defined (M0-M3)\n\n")
+cat("✓ Models defined (m00-m03)\n\n")
 
 # ==============================================================================
 # Fit Models
@@ -205,11 +233,9 @@ cat("✓ Models defined (M0-M3)\n\n")
 cat("Fitting models...\n\n")
 
 # Backend: cmdstanr if available
-backend <- "cmdstanr"
-if (!requireNamespace("cmdstanr", quietly = TRUE)) {
-  cat("cmdstanr not available, using rstan\n")
-  backend <- "rstan"
-}
+backend <- "rstan"  # Force rstan due to macOS SDK mismatch with cmdstanr
+cmdstan_version <- NULL
+cat("Using rstan backend (cmdstanr disabled due to macOS SDK compilation issues)\n")
 
 # Control settings
 control_settings <- list(
@@ -289,7 +315,7 @@ for (model_name in names(models)) {
   cat(glue("  Divergences: {n_divergent}\n\n"))
 
   # Random intercepts plots (if applicable)
-  if (model_name != "M0") {
+  if (model_name != "m00_intercept") {
     cat(glue("  Generating random intercepts plot for {model_name}...\n"))
 
     ri_plot_path <- here("plots", glue("{STAMP}_ri_{model_name}.png"))
@@ -373,15 +399,28 @@ if (length(loo_objects) > 1) {
 
 cat("Writing diagnostics report...\n")
 
+# Capture session info
+si <- sessionInfo()
+r_version <- paste(si$R.version$major, si$R.version$minor, sep = ".")
+brms_version <- as.character(packageVersion("brms"))
+
 md_lines <- c(
   "# Multinomial Model Diagnostics",
   "",
   glue("**Timestamp:** {STAMP}"),
   glue("**Input:** `{basename(input_file)}`"),
-  glue("**Seed:** {seed}"),
-  glue("**Chains:** {chains} | **Iter:** {iter} | **Warmup:** {warmup}"),
-  glue("**Cores:** {cores}"),
-  glue("**Smoke:** {smoke}"),
+  "",
+  "## Computational Environment",
+  "",
+  glue("- **R version:** {r_version}"),
+  glue("- **brms version:** {brms_version}"),
+  glue("- **Backend:** {backend}"),
+  if (!is.null(cmdstan_version)) glue("- **cmdstan version:** {cmdstan_version}") else NULL,
+  glue("- **Cores:** {cores}"),
+  glue("- **Chains:** {chains}"),
+  glue("- **Iterations:** {iter} (warmup: {warmup})"),
+  glue("- **Seed:** {seed}"),
+  glue("- **Smoke mode:** {smoke}"),
   "",
   "## Data Summary",
   "",
@@ -392,12 +431,12 @@ md_lines <- c(
   "",
   "## Models Fitted",
   "",
-  "- **M0:** `~ 1` (intercept only)",
-  "- **M1:** `~ 1 + (1 | pollster)`",
-  "- **M2:** `~ 1 + (1 | pollster) + (1 | vote_status)`",
-  "- **M3:** `~ 1 + (1 | pollster) + (1 | vote_status) + (1 | pollster_wave_id)`",
+  "- **m00_intercept:** `~ 1` (intercept only)",
+  "- **m01_ri_pollster:** `~ 1 + (1 | pollster)`",
+  "- **m02_ri_pollster_vstatus:** `~ 1 + (1 | pollster) + (1 | vote_status)`",
+  "- **m03_ri_pollster_vstatus_wave:** `~ 1 + (1 | pollster) + (1 | vote_status) + (1 | pollster_wave_id)`",
   "",
-  "**Family:** `multinomial(refcat = 'mamdani')`",
+  "**Family:** `multinomial(refcat = 1)` (mamdani as reference)",
   "",
   "**Outcome:** `cbind(num_mamdani, num_cuomo, num_adams, num_sliwa, num_other, num_undecided) | trials(sample_size)`",
   "",
@@ -482,7 +521,7 @@ md_lines <- c(md_lines,
 )
 
 for (model_name in names(fits)) {
-  if (model_name != "M0") {
+  if (model_name != "m00_intercept") {
     ri_path <- glue("plots/{STAMP}_ri_{model_name}.png")
     md_lines <- c(md_lines, glue("- `{ri_path}`"))
   }
