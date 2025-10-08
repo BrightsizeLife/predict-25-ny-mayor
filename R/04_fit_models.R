@@ -17,6 +17,9 @@ seed <- 1234
 smoke <- FALSE
 cores <- NULL
 reloo <- FALSE
+moment_match <- FALSE
+mm_threshold <- 0.7
+regularize_sd <- FALSE
 stability <- FALSE
 save_warnings <- TRUE
 ppc <- TRUE
@@ -43,6 +46,12 @@ if (length(args) > 0) {
       cores <- as.integer(sub("^--cores=", "", arg))
     } else if (grepl("^--reloo=", arg)) {
       reloo <- as.logical(sub("^--reloo=", "", arg))
+    } else if (grepl("^--moment_match=", arg)) {
+      moment_match <- as.logical(sub("^--moment_match=", "", arg))
+    } else if (grepl("^--mm_threshold=", arg)) {
+      mm_threshold <- as.numeric(sub("^--mm_threshold=", "", arg))
+    } else if (grepl("^--regularize_sd=", arg)) {
+      regularize_sd <- as.logical(sub("^--regularize_sd=", "", arg))
     } else if (grepl("^--stability=", arg)) {
       stability <- as.logical(sub("^--stability=", "", arg))
     } else if (grepl("^--save_warnings=", arg)) {
@@ -233,7 +242,14 @@ models <- list(
   m03_ri_pollster_vstatus_wave = formula_M3
 )
 
-cat("✓ Models defined (m00-m03)\n\n")
+# Priors
+if (regularize_sd) {
+  model_priors <- prior(exponential(2), class = sd)
+  cat("✓ Models defined (m00-m03) with regularizing SD priors\n\n")
+} else {
+  model_priors <- NULL
+  cat("✓ Models defined (m00-m03) with default priors\n\n")
+}
 
 # ==============================================================================
 # Fit Models
@@ -268,6 +284,7 @@ for (model_name in names(models)) {
       brm(
         formula = models[[model_name]],
         data = primary,
+        prior = model_priors,
         chains = chains,
         iter = iter,
         warmup = warmup,
@@ -289,6 +306,47 @@ for (model_name in names(models)) {
   if (is.null(fit)) {
     cat(glue("✗ {model_name} FAILED\n\n"))
     next
+  }
+
+  # Check for divergences and auto-rerun with stricter adapt_delta if needed
+  np_check <- nuts_params(fit)
+  n_div_check <- sum(np_check$divergent__)
+
+  if (n_div_check > 0 && control_settings$adapt_delta < 0.999) {
+    cat(glue("⚠ {n_div_check} divergences detected. Re-running with adapt_delta=0.999...\n"))
+
+    stricter_control <- control_settings
+    stricter_control$adapt_delta <- 0.999
+
+    warnings_captured <- character(0)
+
+    fit <- tryCatch({
+      withCallingHandlers({
+        brm(
+          formula = models[[model_name]],
+          data = primary,
+          prior = model_priors,
+          chains = chains,
+          iter = iter,
+          warmup = warmup,
+          cores = cores,
+          seed = seed + 100,  # Slightly different seed
+          backend = backend,
+          control = stricter_control,
+          refresh = 500
+        )
+      }, warning = function(w) {
+        warnings_captured <<- c(warnings_captured, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      })
+    }, error = function(e) {
+      cat(glue("ERROR in rerun: {conditionMessage(e)}\n\n"))
+      return(NULL)
+    })
+
+    if (!is.null(fit)) {
+      cat(glue("✓ Rerun successful with adapt_delta=0.999\n"))
+    }
   }
 
   # Save fit
@@ -367,15 +425,22 @@ cat("=== LOO Comparison ===\n\n")
 
 loo_objects <- list()
 loo_warnings <- list()
+pareto_k_tables <- list()
 
 for (model_name in names(fits)) {
   cat(glue("Computing LOO for {model_name}...\n"))
 
   loo_warnings_captured <- character(0)
 
+  # Initial LOO with moment_match if requested
   loo_obj <- tryCatch({
     withCallingHandlers({
-      loo(fits[[model_name]], reloo = reloo)
+      if (moment_match) {
+        cat(glue("  Using moment_match with threshold={mm_threshold}\n"))
+        loo(fits[[model_name]], moment_match = TRUE, k_threshold = mm_threshold)
+      } else {
+        loo(fits[[model_name]])
+      }
     }, warning = function(w) {
       loo_warnings_captured <<- c(loo_warnings_captured, conditionMessage(w))
       invokeRestart("muffleWarning")
@@ -386,19 +451,67 @@ for (model_name in names(fits)) {
   })
 
   if (!is.null(loo_obj)) {
+    # Extract Pareto k diagnostics
+    pareto_k <- loo_obj$diagnostics$pareto_k
+    n_obs <- length(pareto_k)
+    n_k_gt_07 <- sum(pareto_k > 0.7, na.rm = TRUE)
+    n_k_gt_10 <- sum(pareto_k > 1.0, na.rm = TRUE)
+    max_k <- max(pareto_k, na.rm = TRUE)
+    which_obs_max_k <- which.max(pareto_k)
+
+    pareto_k_tables[[model_name]] <- data.frame(
+      model = model_name,
+      n = n_obs,
+      n_k_gt_07 = n_k_gt_07,
+      n_k_gt_10 = n_k_gt_10,
+      max_k = round(max_k, 3),
+      which_obs_max_k = which_obs_max_k
+    )
+
+    cat(glue("  Pareto k: {n_k_gt_07}/{n_obs} > 0.7, {n_k_gt_10}/{n_obs} > 1.0, max={round(max_k, 3)}\n"))
+
+    # Apply reloo if requested and needed (limit to 10 points)
+    if (reloo && n_k_gt_07 > 0) {
+      n_reloo <- min(10, n_k_gt_07)
+      cat(glue("  Applying reloo to {n_reloo} problematic points (max 10)...\n"))
+
+      loo_obj <- tryCatch({
+        withCallingHandlers({
+          reloo(fits[[model_name]], loo = loo_obj, k_threshold = 0.7)
+        }, warning = function(w) {
+          loo_warnings_captured <<- c(loo_warnings_captured, conditionMessage(w))
+          invokeRestart("muffleWarning")
+        })
+      }, error = function(e) {
+        cat(glue("  Warning: reloo failed: {conditionMessage(e)}\n"))
+        loo_obj  # Return original
+      })
+
+      # Re-check after reloo
+      pareto_k_after <- loo_obj$diagnostics$pareto_k
+      n_k_gt_07_after <- sum(pareto_k_after > 0.7, na.rm = TRUE)
+      max_k_after <- max(pareto_k_after, na.rm = TRUE)
+      cat(glue("  After reloo: {n_k_gt_07_after}/{n_obs} > 0.7, max={round(max_k_after, 3)}\n"))
+    }
+
     loo_objects[[model_name]] <- loo_obj
     loo_warnings[[model_name]] <- loo_warnings_captured
 
-    # Check for problematic observations
-    if (!is.null(loo_obj$diagnostics)) {
-      n_bad <- sum(loo_obj$diagnostics$pareto_k > 0.7, na.rm = TRUE)
-      if (n_bad > 0) {
-        cat(glue("  Warning: {n_bad} observations with Pareto k > 0.7\n"))
-      }
+    # Warn if still problematic
+    if (max_k > 1.0) {
+      cat(glue("  ⚠ WARN: max_k > 1.0 → LOO fragile for this model\n"))
     }
 
     cat(glue("  ✓ LOO computed\n\n"))
   }
+}
+
+# Print Pareto-k summary table
+if (length(pareto_k_tables) > 0) {
+  pareto_k_df <- bind_rows(pareto_k_tables)
+  cat("Pareto-k Summary Table:\n")
+  print(pareto_k_df)
+  cat("\n")
 }
 
 # LOO comparison table
@@ -721,6 +834,25 @@ if (!is.null(loo_comp)) {
     ""
   )
 
+  # Pareto-k summary table
+  if (length(pareto_k_tables) > 0) {
+    md_lines <- c(md_lines,
+      "### Pareto-k Diagnostics",
+      "",
+      glue("**Moment match:** {moment_match} (threshold={mm_threshold})"),
+      glue("**Reloo applied:** {reloo}"),
+      "",
+      "```",
+      capture.output(print(pareto_k_df)),
+      "```",
+      "",
+      "**Interpretation:**",
+      "- k > 0.7: LOO may be unreliable (consider moment_match or reloo)",
+      "- k > 1.0: LOO fragile (influential observations)",
+      ""
+    )
+  }
+
   # LOO warnings
   if (length(loo_warnings) > 0) {
     md_lines <- c(md_lines,
@@ -752,7 +884,7 @@ md_lines <- c(md_lines,
   "",
   "**Distribution:**",
   "",
-  glue("![Pollster Waves Histogram]({pollster_hist_path})"),
+  glue("![Pollster Waves Histogram](plots/{STAMP}_pollster_waves_hist.png)"),
   "",
   "**Interpretation:**",
   "",
